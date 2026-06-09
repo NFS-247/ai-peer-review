@@ -40,6 +40,7 @@ class DispatcherConfig:
     resend_api_key: Optional[str]
     github_token: Optional[str]
     verdict_secret: Optional[str]
+    google_chat_webhook_url: Optional[str] = None
 
     tiers: dict[str, TierConfig] = field(default_factory=dict)
     max_review_rounds: int = 6
@@ -141,6 +142,7 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         resend_api_key=secret("RESEND_API_KEY"),
         github_token=secret("GITHUB_TOKEN"),
         verdict_secret=secret("DISPATCHER_VERDICT_SECRET"),
+        google_chat_webhook_url=secret("GOOGLE_CHAT_WEBHOOK_URL"),
         tiers=tiers_from_repo_config(rc),
         max_review_rounds=max_rounds,
         per_pr_cost_ceiling_usd=per_pr_ceiling,

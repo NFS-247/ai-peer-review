@@ -32,6 +32,7 @@ from .call_gpt import GPTClient
 from .classify import classify
 from .config import DispatcherConfig, load_from_env
 from .converge import CIStatus, check_convergence
+from .call_google_chat import build_escalation_card, send_chat_message
 from .email_send import EmailMessage, ResendClient, build_escalation_email
 from .escalation import EscalationTrigger, decide_escalation
 from .github_api import GitHubAPI, PRComment
@@ -296,6 +297,29 @@ def _send_escalation(
         diff_summary=diff_summary,
         workflow_run_url=workflow_run_url,
     ).text
+
+    # Push channel: ping the operator's phone via Google Chat if configured.
+    # Best-effort and additional — the email/PR-comment path below is the
+    # guaranteed durable record, so a Chat failure never loses the escalation.
+    if cfg.google_chat_webhook_url:
+        try:
+            card = build_escalation_card(
+                project_name=cfg.project_name,
+                pr_number=pr_number,
+                pr_url=pr_url,
+                pr_title=pr_title,
+                tier=tier,
+                reason_short=reason_short,
+                reviewer_summaries=reviewer_summaries,
+            )
+            send_chat_message(cfg.google_chat_webhook_url, card)
+        except Exception as exc:  # noqa: BLE001
+            # Never raise: the durable channels still run below.
+            print(
+                f"Google Chat notification failed ({type(exc).__name__}); "
+                f"falling through to email/PR-comment.",
+                file=sys.stderr,
+            )
 
     emailed = False
     if cfg.resend_api_key and cfg.operator_email:
@@ -750,6 +774,7 @@ def run() -> int:
     for s in (
         cfg.anthropic_api_key, cfg.openai_api_key, cfg.gemini_api_key,
         cfg.resend_api_key, cfg.github_token, cfg.verdict_secret,
+        cfg.google_chat_webhook_url,
     ):
         register_secret(s)
 

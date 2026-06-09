@@ -43,6 +43,10 @@ inputs:
     description: "HMAC key signing dispatcher verdicts. Without it, no verdict counts (fail-safe)."
     required: false
     default: ""
+  google_chat_webhook_url:
+    description: "Google Chat incoming-webhook URL for mobile escalation pings (optional)."
+    required: false
+    default: ""
   repo_config_path:
     description: "Path (relative to the caller checkout) to .github/ai-peer-review.json."
     required: false
@@ -78,4 +82,5 @@ runs:
         OPERATOR_EMAIL: ${{ inputs.operator_email }}
         OPERATOR_GITHUB_LOGIN: ${{ inputs.operator_github_login }}
         DISPATCHER_VERDICT_SECRET: ${{ inputs.dispatcher_verdict_secret }}
+        GOOGLE_CHAT_WEBHOOK_URL: ${{ inputs.google_chat_webhook_url }}
       run: python -m scripts.dispatcher.main

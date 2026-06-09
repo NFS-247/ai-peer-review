@@ -57,3 +57,5 @@ jobs:
           operator_email: ${{ secrets.OPERATOR_EMAIL }}
           operator_github_login: ${{ secrets.OPERATOR_GITHUB_LOGIN }}
           dispatcher_verdict_secret: ${{ secrets.DISPATCHER_VERDICT_SECRET }}
+          # Optional: phone pings when a PR needs your decision.
+          google_chat_webhook_url: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
