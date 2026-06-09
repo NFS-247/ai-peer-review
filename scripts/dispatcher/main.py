@@ -315,6 +315,15 @@ def _send_escalation(
                     cfg.approve_webapp_url or "",
                     repo=cfg.repo_name,
                     pr_number=pr_number,
+                    action="approve",
+                    signing_secret=cfg.approve_signing_secret or "",
+                ),
+                approve_merge_url=build_approve_url(
+                    cfg.approve_webapp_url or "",
+                    repo=cfg.repo_name,
+                    pr_number=pr_number,
+                    action="approve_merge",
+                    signing_secret=cfg.approve_signing_secret or "",
                 ),
             )
             send_chat_message(cfg.google_chat_webhook_url, card)
@@ -780,6 +789,7 @@ def run() -> int:
         cfg.anthropic_api_key, cfg.openai_api_key, cfg.gemini_api_key,
         cfg.resend_api_key, cfg.github_token, cfg.verdict_secret,
         cfg.google_chat_webhook_url, cfg.approve_webapp_url,
+        cfg.approve_signing_secret,
     ):
         register_secret(s)
 

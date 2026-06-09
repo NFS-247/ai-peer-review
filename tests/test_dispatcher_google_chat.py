@@ -59,11 +59,50 @@ def test_card_omits_approve_button_without_url():
     assert [b["text"] for b in buttons] == ["Open PR #1"]
 
 
+def test_card_has_both_buttons_when_urls_given():
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=7, pr_url="http://x/7", pr_title="t",
+        tier="high_stakes", reason_short="r", reviewer_summaries={},
+        approve_url="http://x/exec?action=approve",
+        approve_merge_url="http://x/exec?action=approve_merge",
+    )
+    buttons = card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+    assert [b["text"] for b in buttons] == ["✅ Approve", "🚀 Approve & Merge", "Open PR #7"]
+
+
 def test_build_approve_url():
     base = "https://script.google.com/macros/s/AB/exec"
     url = gc.build_approve_url(base, repo="StockTrader", pr_number=89)
     assert url.startswith(base + "?")
     assert "repo=StockTrader" in url and "pr=89" in url and "action=approve" in url
+    assert "sig=" not in url  # no secret -> no signature
+
+
+def test_signed_url_carries_sig_and_binds_to_pr():
+    base = "https://script.google.com/macros/s/AB/exec"
+    secret = "s3cret"
+    u89 = gc.build_approve_url(base, repo="R", pr_number=89, signing_secret=secret)
+    u99 = gc.build_approve_url(base, repo="R", pr_number=99, signing_secret=secret)
+    assert "sig=" in u89
+    # The signature is bound to the PR number: editing pr= invalidates it.
+    sig89 = u89.split("sig=")[1]
+    sig99 = u99.split("sig=")[1]
+    assert sig89 != sig99
+    # And it matches a recomputation over repo:pr:action.
+    assert sig89 == gc.sign_action(secret, repo="R", pr_number=89, action="approve")
+
+
+def test_sign_action_distinguishes_action():
+    s = "k"
+    assert gc.sign_action(s, repo="R", pr_number=1, action="approve") != \
+        gc.sign_action(s, repo="R", pr_number=1, action="approve_merge")
+
+
+def test_merge_url_uses_merge_action():
+    url = gc.build_approve_url(
+        "https://x/exec", repo="R", pr_number=7, action="approve_merge", signing_secret="k"
+    )
+    assert "action=approve_merge" in url
 
 
 def test_build_approve_url_appends_with_existing_query():
@@ -147,5 +186,7 @@ def test_config_loads_approve_url_from_env():
     cfg = C.load_from_env({
         "GITHUB_TOKEN": "t",
         "APPROVE_WEBAPP_URL": "https://script.google.com/macros/s/AB/exec",
+        "APPROVE_SIGNING_SECRET": "sec",
     })
     assert cfg.approve_webapp_url == "https://script.google.com/macros/s/AB/exec"
+    assert cfg.approve_signing_secret == "sec"

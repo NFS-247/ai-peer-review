@@ -1,61 +1,64 @@
-# One-tap approve from Google Chat
+# One-tap approve / merge from Google Chat
 
-Turns the escalation card's button into **✅ Approve** — tap it and the
-dispatcher gets your `OPERATOR APPROVE`, no typing. It's a small Google Apps
-Script locked to your own Google account. One setup, works for every project.
+Turns the escalation card's buttons into **✅ Approve** and **🚀 Approve & Merge** —
+tap and the dispatcher gets your decision, no typing. It's a small Google Apps
+Script locked to your own Google account, with each link **signed for one
+specific PR** so it can't be edited to act on another.
 
 ## How it works
 
 ```
-PR needs you → dispatcher posts Chat card with "✅ Approve" button
-   → you tap it → opens this Apps Script (only YOU can open it)
-   → it posts "OPERATOR APPROVE" on the PR as you
-   → shows a "done → merge here" page → you tap Merge on GitHub
+PR needs you → dispatcher posts a Chat card with signed Approve / Approve&Merge
+   → you tap → opens this Apps Script (only YOU can open it; signature checked)
+   → it posts "OPERATOR APPROVE" as you (and merges, for Approve & Merge)
 ```
 
-You still do the final **Merge** tap yourself (approve-only), by design.
+Two locks: the **"Only myself"** deploy (only your Google account can invoke it)
+**and** a per-PR **HMAC signature** (a link only works for the exact PR + action
+it was minted for — editing `pr=90` to `pr=99` is rejected).
 
-## Setup (once, ~10 min)
+## Setup (once)
 
-### 1. Make a GitHub token for it
-GitHub → **Settings → Developer settings → Fine-grained personal access tokens →
-Generate new token**:
-- **Resource owner:** NFS-247
-- **Repository access:** the repos you want to approve from Chat (StockTrader, etc.)
-- **Permissions → Repository → Pull requests: Read and write**
-- Generate, copy the token (starts `github_pat_…`).
+### 1. GitHub token
+GitHub → Settings → Developer settings → **Fine-grained personal access tokens**:
+- **Resource owner:** NFS-247 · **Repos:** StockTrader (+ others later)
+- **Permissions → Pull requests: Read and write**
+- **Also Contents: Read and write** — required for the **Approve & Merge** button
+- Copy the `github_pat_…`.
 
-### 2. Create the Apps Script
-- Go to **script.google.com → New project**.
-- Delete the sample, paste the contents of **`Code.gs`** (next to this file).
-- **Project Settings (gear) → Script properties → Add script property:**
-  | Property | Value |
-  |----------|-------|
-  | `GITHUB_TOKEN` | the `github_pat_…` from step 1 |
+### 2. Pick a signing secret
+Make one long random string (e.g. a password manager "generate"). You'll paste
+the **same** value in two places below. Call it `SIGNING`.
+
+### 3. Apps Script
+- **script.google.com → New project** → paste `Code.gs`.
+- **⚙ Project Settings → Script properties:**
+  | Property (exact) | Value |
+  |---|---|
+  | `GITHUB_TOKEN` | the `github_pat_…` |
   | `GITHUB_OWNER` | `NFS-247` |
-  | `APPROVE_TOKEN` | *(optional)* a long random string for extra safety |
+  | `APPROVE_SIGNING_SECRET` | your `SIGNING` string |
+  | `MERGE_METHOD` *(optional)* | `merge` (or `squash` / `rebase`) |
 
-### 3. Deploy it as a web app
-- **Deploy → New deployment → ⚙ → Web app.**
-- **Execute as:** Me
-- **Who has access:** **Only myself**  ← this is the lock; nobody else can trigger it
-- **Deploy**, authorize when prompted, and **copy the Web app URL** (ends in `/exec`).
+### 4. Deploy
+- **Deploy → New deployment → Web app** · Execute as **Me** · Access **Only myself**.
+- Copy the **/exec URL**.
 
-> If you set `APPROVE_TOKEN`, append `?token=YOURSTRING` to that URL before using it.
+### 5. Repo secrets (StockTrader, then each project)
+Settings → Secrets and variables → Actions:
+| Secret (exact) | Value |
+|---|---|
+| `APPROVE_WEBAPP_URL` | the `/exec` URL |
+| `APPROVE_SIGNING_SECRET` | the **same** `SIGNING` string from step 2 |
 
-### 4. Give the repos the URL
-For each repo (StockTrader, …): **Settings → Secrets and variables → Actions →
-New repository secret**:
-- **Name:** `APPROVE_WEBAPP_URL`
-- **Value:** the `/exec` URL from step 3
-
-That's it. Next time a PR escalates, the card shows **✅ Approve** — one tap.
+That's it. The next escalation card shows **✅ Approve** and **🚀 Approve & Merge**.
 
 ## Security
 
-- The deployment is **"Only myself"**, so only you (signed into your Google
-  account) can ever invoke it. A leaked link does nothing for anyone else.
-- The GitHub token lives in **Script properties**, never in the card or code.
-- Optional `APPROVE_TOKEN` adds a shared-secret check on top.
-- The dispatcher registers `APPROVE_WEBAPP_URL` as a secret value, so it is
-  scrubbed from any comment the dispatcher posts.
+- **Only myself** deploy → only you (signed into Google) can invoke it.
+- **Per-PR HMAC** → a leaked/edited link is rejected for any other PR or action.
+- GitHub token lives only in **Script properties**.
+- The dispatcher registers `APPROVE_WEBAPP_URL` and `APPROVE_SIGNING_SECRET` as
+  secret values, so they're scrubbed from any comment it posts.
+- Keep the Chat space **members = just you**, so the card (and its links) aren't
+  shared even though the links are inert for anyone else.

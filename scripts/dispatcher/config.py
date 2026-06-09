@@ -42,6 +42,7 @@ class DispatcherConfig:
     verdict_secret: Optional[str]
     google_chat_webhook_url: Optional[str] = None
     approve_webapp_url: Optional[str] = None
+    approve_signing_secret: Optional[str] = None
 
     tiers: dict[str, TierConfig] = field(default_factory=dict)
     max_review_rounds: int = 6
@@ -145,6 +146,7 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         verdict_secret=secret("DISPATCHER_VERDICT_SECRET"),
         google_chat_webhook_url=secret("GOOGLE_CHAT_WEBHOOK_URL"),
         approve_webapp_url=secret("APPROVE_WEBAPP_URL"),
+        approve_signing_secret=secret("APPROVE_SIGNING_SECRET"),
         tiers=tiers_from_repo_config(rc),
         max_review_rounds=max_rounds,
         per_pr_cost_ceiling_usd=per_pr_ceiling,

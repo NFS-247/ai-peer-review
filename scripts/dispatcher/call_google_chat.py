@@ -12,6 +12,8 @@ Pure stdlib (urllib), no dependencies, consistent with the rest of the package.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import urllib.error
 import urllib.parse
@@ -34,21 +36,23 @@ def build_escalation_card(
     reason_short: str,
     reviewer_summaries: Mapping[str, str],
     approve_url: str = "",
+    approve_merge_url: str = "",
 ) -> dict:
     """Build a Google Chat cardsV2 payload for an escalation.
 
     The card always carries an "Open PR" button. When ``approve_url`` is set
-    (the operator's one-tap approve web app — see chat-approve/Code.gs), it also
-    carries a "✅ Approve" button that posts OPERATOR APPROVE for the operator,
-    so a decision is a single tap with no typing.
+    (the operator's one-tap web app — see chat-approve/Code.gs) it also carries
+    a "✅ Approve" button (posts OPERATOR APPROVE); when ``approve_merge_url`` is
+    set it adds a "🚀 Approve & Merge" button (approve, then merge). Both are
+    single-tap, no typing.
     """
     reviewer_lines = "  •  ".join(
         f"{name}: {summary}" for name, summary in reviewer_summaries.items()
     ) or "(no reviewers yet)"
 
-    if approve_url:
+    if approve_url or approve_merge_url:
         instructions = (
-            "Tap <b>✅ Approve</b> below, or open the PR for "
+            "Tap a button below, or open the PR for "
             "<b>BLOCK</b> / <b>INVESTIGATE</b>."
         )
     else:
@@ -68,16 +72,14 @@ def build_escalation_card(
     buttons = []
     if approve_url:
         buttons.append(
-            {
-                "text": "✅ Approve",
-                "onClick": {"openLink": {"url": approve_url}},
-            }
+            {"text": "✅ Approve", "onClick": {"openLink": {"url": approve_url}}}
+        )
+    if approve_merge_url:
+        buttons.append(
+            {"text": "🚀 Approve & Merge", "onClick": {"openLink": {"url": approve_merge_url}}}
         )
     buttons.append(
-        {
-            "text": f"Open PR #{pr_number}",
-            "onClick": {"openLink": {"url": pr_url}},
-        }
+        {"text": f"Open PR #{pr_number}", "onClick": {"openLink": {"url": pr_url}}}
     )
 
     return {
@@ -103,17 +105,40 @@ def build_escalation_card(
     }
 
 
-def build_approve_url(base_url: str, *, repo: str, pr_number: int) -> str:
-    """Build the one-tap approve link for a PR from the configured web-app base.
+def sign_action(secret: str, *, repo: str, pr_number: int, action: str) -> str:
+    """HMAC-SHA256 hex over the canonical ``repo:pr:action`` string.
+
+    Binds an approve/merge link to one specific PR and action, so a leaked or
+    hand-edited URL (e.g. pr=90 → pr=99) fails verification in the Apps Script.
+    """
+    msg = f"{repo}:{pr_number}:{action}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def build_approve_url(
+    base_url: str,
+    *,
+    repo: str,
+    pr_number: int,
+    action: str = "approve",
+    signing_secret: str = "",
+) -> str:
+    """Build a signed one-tap link (approve or approve_merge) for a PR.
 
     ``base_url`` is the Apps Script /exec URL (it may already carry a ?token=…).
-    Returns "" when no base is configured, so the card simply omits the button.
+    Returns "" when no base is configured, so the card omits the button. When
+    ``signing_secret`` is set, a ``sig`` HMAC bound to repo+pr+action is added;
+    the Apps Script rejects any link whose signature doesn't match.
     """
     if not base_url:
         return ""
+    params = {"repo": repo, "pr": pr_number, "action": action}
+    if signing_secret:
+        params["sig"] = sign_action(
+            signing_secret, repo=repo, pr_number=pr_number, action=action
+        )
     sep = "&" if "?" in base_url else "?"
-    query = urllib.parse.urlencode({"repo": repo, "pr": pr_number, "action": "approve"})
-    return f"{base_url}{sep}{query}"
+    return f"{base_url}{sep}{urllib.parse.urlencode(params)}"
 
 
 def send_chat_message(webhook_url: str, payload: dict, *, timeout: int = 20) -> None:
@@ -135,4 +160,9 @@ def send_chat_message(webhook_url: str, payload: dict, *, timeout: int = 20) -> 
         resp.read()
 
 
-__all__ = ["build_escalation_card", "build_approve_url", "send_chat_message"]
+__all__ = [
+    "build_escalation_card",
+    "build_approve_url",
+    "sign_action",
+    "send_chat_message",
+]
