@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AI Peer Review per-repo config",
+  "description": "Drop this file at .github/ai-peer-review.json in a consuming repo to tailor classification, reviewer rosters, and ceilings. Every field is optional; omitted fields use safe defaults. Unknown keys are ignored (forward compatible). Wrong types fail the run loudly so a bad config can never silently misclassify.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "project_name": {
+      "type": "string",
+      "description": "Human-readable project name used in comments/emails."
+    },
+    "operator_github_login": {
+      "type": "string",
+      "description": "GitHub login of the human operator who can issue OPERATOR commands and receives escalations."
+    },
+    "high_stakes_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "fnmatch globs. Any changed file matching these forces the high_stakes tier (strictest review + escalation). Unknown paths already default to high_stakes (deny-first); list the files most dangerous to change."
+    },
+    "content_scan_safety_tokens": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Literal substrings; if any appears in the diff, the PR is high_stakes regardless of path."
+    },
+    "content_scan_safety_patterns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Python regexes; if any matches the diff, the PR is high_stakes regardless of path."
+    },
+    "routine_root_exact": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Exact root-level filenames treated as routine (docs/config), e.g. README.md."
+    },
+    "routine_root_globs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Root-level-only globs treated as routine, e.g. *.md (does NOT match nested markdown)."
+    },
+    "routine_path_patterns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Directory-prefixed routine patterns, e.g. docs/**/*.md."
+    },
+    "backend_path_roots": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Path prefixes considered backend code (not safety-relevant), e.g. src/, tests/."
+    },
+    "routine_reviewers": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["claude", "gpt", "gemini"] },
+      "description": "Reviewer roster for the routine tier."
+    },
+    "backend_reviewers": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["claude", "gpt", "gemini"] },
+      "description": "Reviewer roster for the backend tier."
+    },
+    "high_stakes_reviewers": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["claude", "gpt", "gemini"] },
+      "description": "Reviewer roster for the high_stakes tier."
+    },
+    "max_review_rounds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Hard cap on review rounds before forced escalation."
+    },
+    "routine_round_budget": { "type": "integer", "minimum": 1 },
+    "backend_round_budget": { "type": "integer", "minimum": 1 },
+    "high_stakes_round_budget": { "type": "integer", "minimum": 1 },
+    "per_pr_cost_ceiling_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Per-PR spend ceiling; exceeding it escalates instead of spending more."
+    },
+    "daily_cost_ceiling_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Rolling 24h spend ceiling across the repo."
+    }
+  }
+}

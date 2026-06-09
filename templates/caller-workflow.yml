@@ -1,0 +1,59 @@
+# Copy this file into a consuming repo at:
+#   .github/workflows/ai-peer-review.yml
+#
+# It is the ONLY workflow file the consuming repo needs. On PR / CI-completion /
+# PR-comment events it runs the AI peer review dispatcher (Claude/GPT/Gemini)
+# from NFS-247/ai-peer-review at a pinned tag and posts signed verdicts.
+#
+# The dispatcher code is fetched automatically by `uses:` — no PAT, no
+# cross-repo checkout. Pin @v1 so a change in the dispatcher repo can never
+# silently change how your PRs are reviewed; bump the tag deliberately.
+
+name: AI Peer Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+  check_run:
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+  checks: read
+
+concurrency:
+  group: ai-peer-review-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event_name == 'check_run' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+    steps:
+      # Check out THIS repo's base branch (trusted) so the dispatcher can read
+      # its .github/ai-peer-review.json. Never the PR head. Safe to omit if you
+      # don't ship a config file (the dispatcher then uses safe defaults).
+      - name: Checkout base branch (never PR head)
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Run AI peer review
+        uses: NFS-247/ai-peer-review@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          resend_api_key: ${{ secrets.RESEND_API_KEY }}
+          operator_email: ${{ secrets.OPERATOR_EMAIL }}
+          operator_github_login: ${{ secrets.OPERATOR_GITHUB_LOGIN }}
+          dispatcher_verdict_secret: ${{ secrets.DISPATCHER_VERDICT_SECRET }}

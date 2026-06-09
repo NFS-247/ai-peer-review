@@ -1,0 +1,131 @@
+"""Tests for scripts.dispatcher.config.load_from_env.
+
+Covers GPT review #3 on PR #79: the whitespace-stripping fix was one of the
+two live-smoke root causes (a trailing newline in a stored secret produces an
+"Invalid header value" error). This proves every secret env var is stripped
+and that empty-after-strip becomes None.
+"""
+
+from scripts.dispatcher.config import load_from_env
+
+
+SECRET_VARS = [
+    ("ANTHROPIC_API_KEY", "anthropic_api_key"),
+    ("OPENAI_API_KEY", "openai_api_key"),
+    ("GEMINI_API_KEY", "gemini_api_key"),
+    ("RESEND_API_KEY", "resend_api_key"),
+    ("GITHUB_TOKEN", "github_token"),
+    ("DISPATCHER_VERDICT_SECRET", "verdict_secret"),
+]
+
+
+def test_all_secrets_stripped_of_trailing_newline():
+    # Each secret carries the exact failure shape from the smoke test: a
+    # trailing newline. load_from_env must strip it.
+    env = {
+        "GITHUB_REPOSITORY": "NFS-247/StockTrader",
+    }
+    for var, _ in SECRET_VARS:
+        env[var] = f"value-for-{var}\n"
+
+    cfg = load_from_env(env)
+
+    for var, attr in SECRET_VARS:
+        assert getattr(cfg, attr) == f"value-for-{var}"
+        assert "\n" not in (getattr(cfg, attr) or "")
+
+
+def test_secrets_stripped_of_surrounding_spaces():
+    env = {"ANTHROPIC_API_KEY": "  spaced-key  ", "GITHUB_TOKEN": "tok"}
+    cfg = load_from_env(env)
+    assert cfg.anthropic_api_key == "spaced-key"
+
+
+def test_empty_after_strip_becomes_none():
+    env = {
+        "ANTHROPIC_API_KEY": "   ",   # whitespace only -> None
+        "OPENAI_API_KEY": "\n",        # newline only -> None
+        "GITHUB_TOKEN": "real-token",
+    }
+    cfg = load_from_env(env)
+    assert cfg.anthropic_api_key is None
+    assert cfg.openai_api_key is None
+    assert cfg.github_token == "real-token"
+
+
+def test_missing_secret_is_none():
+    env = {"GITHUB_TOKEN": "tok"}  # only github token present
+    cfg = load_from_env(env)
+    assert cfg.anthropic_api_key is None
+    assert cfg.gemini_api_key is None
+    assert cfg.resend_api_key is None
+    assert cfg.verdict_secret is None
+
+
+def test_operator_email_stripped():
+    env = {"OPERATOR_EMAIL": "  nick@example.com\n", "GITHUB_TOKEN": "tok"}
+    cfg = load_from_env(env)
+    assert cfg.operator_email == "nick@example.com"
+
+
+# ---- Phase 3 A3: project metadata + rosters from repo config file ----------
+
+import json as _json
+from scripts.dispatcher.config import tiers_from_repo_config, REPO_CONFIG_PATH_ENV
+from scripts.dispatcher.repo_config import RepoConfig
+
+
+def test_no_config_file_uses_tradewatcher_defaults():
+    cfg = load_from_env({"GITHUB_TOKEN": "t"})
+    assert cfg.project_name == "TradeWatcher"
+    assert cfg.operator_github_login == "NERT24"
+    assert cfg.tiers["high_stakes"].reviewers == ("claude", "gpt", "gemini")
+    assert cfg.tiers["backend"].reviewers == ("claude", "gpt")
+    assert cfg.per_pr_cost_ceiling_usd == 5.0
+    assert cfg.daily_cost_ceiling_usd == 20.0
+
+
+def test_config_file_supplies_project_metadata(tmp_path):
+    p = tmp_path / "ai-peer-review.json"
+    p.write_text(_json.dumps({
+        "project_name": "Vendor Intelligence",
+        "operator_github_login": "someone-else",
+        "high_stakes_reviewers": ["claude", "gpt"],
+        "per_pr_cost_ceiling_usd": 3,
+        "daily_cost_ceiling_usd": 12,
+    }), encoding="utf-8")
+
+    cfg = load_from_env({"GITHUB_TOKEN": "t", REPO_CONFIG_PATH_ENV: str(p)})
+    assert cfg.project_name == "Vendor Intelligence"
+    assert cfg.operator_github_login == "someone-else"
+    assert cfg.tiers["high_stakes"].reviewers == ("claude", "gpt")
+    assert cfg.per_pr_cost_ceiling_usd == 3.0
+    assert cfg.daily_cost_ceiling_usd == 12.0
+    # repo_config is carried through for classify()
+    assert cfg.repo_config.project_name == "Vendor Intelligence"
+
+
+def test_env_var_overrides_config_file(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text(_json.dumps({"project_name": "FromFile"}), encoding="utf-8")
+    cfg = load_from_env({
+        "GITHUB_TOKEN": "t",
+        REPO_CONFIG_PATH_ENV: str(p),
+        "PROJECT_NAME": "FromEnv",
+    })
+    # env wins over file
+    assert cfg.project_name == "FromEnv"
+
+
+def test_tiers_from_repo_config_maps_rosters():
+    rc = RepoConfig(
+        routine_reviewers=("claude",),
+        backend_reviewers=("claude", "gpt"),
+        high_stakes_reviewers=("claude", "gpt", "gemini"),
+        routine_round_budget=4,
+        high_stakes_round_budget=1,
+    )
+    tiers = tiers_from_repo_config(rc)
+    assert tiers["routine"].reviewers == ("claude",)
+    assert tiers["routine"].round_budget == 4
+    assert tiers["high_stakes"].round_budget == 1

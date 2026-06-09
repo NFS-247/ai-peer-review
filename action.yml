@@ -1,0 +1,81 @@
+name: "AI Peer Review Dispatcher"
+description: >
+  Runs the AI peer review dispatcher against the calling repository's pull
+  request. Claude/GPT/Gemini review adversarially and post HMAC-signed
+  verdicts; the dispatcher converges or escalates to the human operator. It
+  never merges (no contents: write in the caller).
+
+# This is a composite action so the dispatcher package travels WITH it:
+# when a repo does `uses: NFS-247/ai-peer-review@v1`, GitHub fetches this
+# repo's contents into ${{ github.action_path }} automatically — no cross-repo
+# checkout, no PAT, no token juggling. Private-action access is governed by the
+# org's Actions access setting.
+
+inputs:
+  github_token:
+    description: "Token for GitHub API calls. Pass secrets.GITHUB_TOKEN."
+    required: true
+  anthropic_api_key:
+    description: "Anthropic API key (Claude reviewer)."
+    required: false
+    default: ""
+  openai_api_key:
+    description: "OpenAI API key (GPT reviewer)."
+    required: false
+    default: ""
+  gemini_api_key:
+    description: "Gemini API key (Gemini reviewer, high-stakes)."
+    required: false
+    default: ""
+  resend_api_key:
+    description: "Resend API key for escalation email (optional; falls back to a PR comment)."
+    required: false
+    default: ""
+  operator_email:
+    description: "Escalation email recipient (optional)."
+    required: false
+    default: ""
+  operator_github_login:
+    description: "GitHub login allowed to issue OPERATOR commands."
+    required: false
+    default: "NERT24"
+  dispatcher_verdict_secret:
+    description: "HMAC key signing dispatcher verdicts. Without it, no verdict counts (fail-safe)."
+    required: false
+    default: ""
+  repo_config_path:
+    description: "Path (relative to the caller checkout) to .github/ai-peer-review.json."
+    required: false
+    default: ".github/ai-peer-review.json"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c  # v5.0.0
+      with:
+        python-version: "3.12"
+
+    - name: Run dispatcher
+      shell: bash
+      # cwd = the action's own checkout, so `python -m scripts.dispatcher.main`
+      # resolves THIS repo's package — never a vendored copy in the caller.
+      working-directory: ${{ github.action_path }}
+      env:
+        PYTHONPATH: ${{ github.action_path }}
+        # The caller's config lives in its own checkout at github.workspace.
+        REPO_CONFIG_PATH: ${{ github.workspace }}/${{ inputs.repo_config_path }}
+        # github.* refers to the CALLER's triggering event/repo.
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
+        RESEND_API_KEY: ${{ inputs.resend_api_key }}
+        OPERATOR_EMAIL: ${{ inputs.operator_email }}
+        OPERATOR_GITHUB_LOGIN: ${{ inputs.operator_github_login }}
+        DISPATCHER_VERDICT_SECRET: ${{ inputs.dispatcher_verdict_secret }}
+      run: python -m scripts.dispatcher.main

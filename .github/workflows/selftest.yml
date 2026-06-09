@@ -1,0 +1,26 @@
+name: selftest
+
+# CI for the dispatcher repo itself: prove the package stays self-contained
+# (stdlib-only, no cross-package imports) and all tests pass on every change.
+# The standalone guard tests (tests/test_dispatcher_standalone.py) are the
+# portability contract — they fail the build if anyone reintroduces an
+# external or sibling-package import.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+      - uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c  # v5.0.0
+        with:
+          python-version: "3.12"
+      - name: Run tests (stdlib only, no install step)
+        run: python -m pytest tests/ -q

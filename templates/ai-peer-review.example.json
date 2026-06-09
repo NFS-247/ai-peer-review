@@ -1,0 +1,38 @@
+{
+  "$comment": "Copy to .github/ai-peer-review.json in a consuming repo and edit. Every field is optional; delete what you don't need. This example is for a generic web app (vendor-intelligence style). Full field docs: ai-peer-review.schema.json.",
+
+  "project_name": "Vendor Intelligence",
+  "operator_github_login": "NERT24",
+
+  "high_stakes_paths": [
+    "src/billing/**",
+    "src/auth/**",
+    "src/payments/**",
+    ".github/workflows/**",
+    "infra/**",
+    "Dockerfile",
+    "docker-compose*.yml"
+  ],
+
+  "content_scan_safety_tokens": [
+    "DROP TABLE",
+    "force_push",
+    "--no-verify",
+    "secret_key",
+    "private_key"
+  ],
+
+  "backend_path_roots": [
+    "src/",
+    "tests/"
+  ],
+
+  "routine_reviewers": ["claude", "gpt"],
+  "backend_reviewers": ["claude", "gpt"],
+  "high_stakes_reviewers": ["claude", "gpt", "gemini"],
+
+  "max_review_rounds": 6,
+  "high_stakes_round_budget": 2,
+  "per_pr_cost_ceiling_usd": 5.0,
+  "daily_cost_ceiling_usd": 20.0
+}
