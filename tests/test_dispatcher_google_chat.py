@@ -33,6 +33,50 @@ def test_card_has_header_button_and_reviewers():
     assert button["onClick"]["openLink"]["url"].endswith("/pull/88")
 
 
+def test_card_has_approve_button_when_url_given():
+    card = gc.build_escalation_card(
+        project_name="TradeWatcher",
+        pr_number=89,
+        pr_url="https://github.com/NFS-247/StockTrader/pull/89",
+        pr_title="x",
+        tier="high_stakes",
+        reason_short="r",
+        reviewer_summaries={},
+        approve_url="https://script.google.com/macros/s/AB/exec?repo=StockTrader&pr=89&action=approve",
+    )
+    buttons = card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+    texts = [b["text"] for b in buttons]
+    assert texts == ["✅ Approve", "Open PR #89"]
+    assert buttons[0]["onClick"]["openLink"]["url"].endswith("action=approve")
+
+
+def test_card_omits_approve_button_without_url():
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="t",
+        tier="backend", reason_short="r", reviewer_summaries={},
+    )
+    buttons = card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+    assert [b["text"] for b in buttons] == ["Open PR #1"]
+
+
+def test_build_approve_url():
+    base = "https://script.google.com/macros/s/AB/exec"
+    url = gc.build_approve_url(base, repo="StockTrader", pr_number=89)
+    assert url.startswith(base + "?")
+    assert "repo=StockTrader" in url and "pr=89" in url and "action=approve" in url
+
+
+def test_build_approve_url_appends_with_existing_query():
+    base = "https://script.google.com/macros/s/AB/exec?token=abc"
+    url = gc.build_approve_url(base, repo="R", pr_number=5)
+    assert "?token=abc&" in url
+    assert url.count("?") == 1
+
+
+def test_build_approve_url_empty_base_returns_empty():
+    assert gc.build_approve_url("", repo="R", pr_number=5) == ""
+
+
 def test_card_escapes_html_in_title():
     card = gc.build_escalation_card(
         project_name="P",
@@ -96,3 +140,12 @@ def test_config_loads_webhook_from_env():
 def test_config_webhook_absent_is_none():
     cfg = C.load_from_env({"GITHUB_TOKEN": "t"})
     assert cfg.google_chat_webhook_url is None
+    assert cfg.approve_webapp_url is None
+
+
+def test_config_loads_approve_url_from_env():
+    cfg = C.load_from_env({
+        "GITHUB_TOKEN": "t",
+        "APPROVE_WEBAPP_URL": "https://script.google.com/macros/s/AB/exec",
+    })
+    assert cfg.approve_webapp_url == "https://script.google.com/macros/s/AB/exec"

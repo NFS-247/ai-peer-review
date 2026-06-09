@@ -47,6 +47,10 @@ inputs:
     description: "Google Chat incoming-webhook URL for mobile escalation pings (optional)."
     required: false
     default: ""
+  approve_webapp_url:
+    description: "Apps Script /exec URL for one-tap operator approval from the Chat card (optional)."
+    required: false
+    default: ""
   repo_config_path:
     description: "Path (relative to the caller checkout) to .github/ai-peer-review.json."
     required: false
@@ -83,4 +87,5 @@ runs:
         OPERATOR_GITHUB_LOGIN: ${{ inputs.operator_github_login }}
         DISPATCHER_VERDICT_SECRET: ${{ inputs.dispatcher_verdict_secret }}
         GOOGLE_CHAT_WEBHOOK_URL: ${{ inputs.google_chat_webhook_url }}
+        APPROVE_WEBAPP_URL: ${{ inputs.approve_webapp_url }}
       run: python -m scripts.dispatcher.main

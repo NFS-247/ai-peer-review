@@ -59,3 +59,5 @@ jobs:
           dispatcher_verdict_secret: ${{ secrets.DISPATCHER_VERDICT_SECRET }}
           # Optional: phone pings when a PR needs your decision.
           google_chat_webhook_url: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+          # Optional: one-tap "Approve" button in the Chat card (Apps Script URL).
+          approve_webapp_url: ${{ secrets.APPROVE_WEBAPP_URL }}

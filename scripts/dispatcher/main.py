@@ -32,7 +32,7 @@ from .call_gpt import GPTClient
 from .classify import classify
 from .config import DispatcherConfig, load_from_env
 from .converge import CIStatus, check_convergence
-from .call_google_chat import build_escalation_card, send_chat_message
+from .call_google_chat import build_approve_url, build_escalation_card, send_chat_message
 from .email_send import EmailMessage, ResendClient, build_escalation_email
 from .escalation import EscalationTrigger, decide_escalation
 from .github_api import GitHubAPI, PRComment
@@ -311,6 +311,11 @@ def _send_escalation(
                 tier=tier,
                 reason_short=reason_short,
                 reviewer_summaries=reviewer_summaries,
+                approve_url=build_approve_url(
+                    cfg.approve_webapp_url or "",
+                    repo=cfg.repo_name,
+                    pr_number=pr_number,
+                ),
             )
             send_chat_message(cfg.google_chat_webhook_url, card)
         except Exception as exc:  # noqa: BLE001
@@ -774,7 +779,7 @@ def run() -> int:
     for s in (
         cfg.anthropic_api_key, cfg.openai_api_key, cfg.gemini_api_key,
         cfg.resend_api_key, cfg.github_token, cfg.verdict_secret,
-        cfg.google_chat_webhook_url,
+        cfg.google_chat_webhook_url, cfg.approve_webapp_url,
     ):
         register_secret(s)
 

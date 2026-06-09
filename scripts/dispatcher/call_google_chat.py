@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Mapping
 
@@ -32,25 +33,51 @@ def build_escalation_card(
     tier: str,
     reason_short: str,
     reviewer_summaries: Mapping[str, str],
+    approve_url: str = "",
 ) -> dict:
     """Build a Google Chat cardsV2 payload for an escalation.
 
-    The card shows what needs deciding and a button that deep-links to the PR,
-    where the operator replies with an OPERATOR command. (Buttons that take the
-    action directly would require a hosted Chat app endpoint; that is a future
-    upgrade — this version links out.)
+    The card always carries an "Open PR" button. When ``approve_url`` is set
+    (the operator's one-tap approve web app — see chat-approve/Code.gs), it also
+    carries a "✅ Approve" button that posts OPERATOR APPROVE for the operator,
+    so a decision is a single tap with no typing.
     """
     reviewer_lines = "  •  ".join(
         f"{name}: {summary}" for name, summary in reviewer_summaries.items()
     ) or "(no reviewers yet)"
 
+    if approve_url:
+        instructions = (
+            "Tap <b>✅ Approve</b> below, or open the PR for "
+            "<b>BLOCK</b> / <b>INVESTIGATE</b>."
+        )
+    else:
+        instructions = (
+            "Open the PR and reply with one of:<br>"
+            "<b>OPERATOR APPROVE</b> · <b>OPERATOR BLOCK &lt;reason&gt;</b> · "
+            "<b>OPERATOR INVESTIGATE &lt;note&gt;</b>"
+        )
+
     body = (
         f"<b>{_esc(pr_title)}</b><br>"
         f"<b>Why:</b> {_esc(reason_short)}<br>"
         f"<b>Reviewers:</b> {_esc(reviewer_lines)}<br><br>"
-        f"Open the PR and reply with one of:<br>"
-        f"<b>OPERATOR APPROVE</b> · <b>OPERATOR BLOCK &lt;reason&gt;</b> · "
-        f"<b>OPERATOR INVESTIGATE &lt;note&gt;</b>"
+        f"{instructions}"
+    )
+
+    buttons = []
+    if approve_url:
+        buttons.append(
+            {
+                "text": "✅ Approve",
+                "onClick": {"openLink": {"url": approve_url}},
+            }
+        )
+    buttons.append(
+        {
+            "text": f"Open PR #{pr_number}",
+            "onClick": {"openLink": {"url": pr_url}},
+        }
     )
 
     return {
@@ -66,18 +93,7 @@ def build_escalation_card(
                         {
                             "widgets": [
                                 {"textParagraph": {"text": body}},
-                                {
-                                    "buttonList": {
-                                        "buttons": [
-                                            {
-                                                "text": f"Open PR #{pr_number}",
-                                                "onClick": {
-                                                    "openLink": {"url": pr_url}
-                                                },
-                                            }
-                                        ]
-                                    }
-                                },
+                                {"buttonList": {"buttons": buttons}},
                             ]
                         }
                     ],
@@ -85,6 +101,19 @@ def build_escalation_card(
             }
         ]
     }
+
+
+def build_approve_url(base_url: str, *, repo: str, pr_number: int) -> str:
+    """Build the one-tap approve link for a PR from the configured web-app base.
+
+    ``base_url`` is the Apps Script /exec URL (it may already carry a ?token=…).
+    Returns "" when no base is configured, so the card simply omits the button.
+    """
+    if not base_url:
+        return ""
+    sep = "&" if "?" in base_url else "?"
+    query = urllib.parse.urlencode({"repo": repo, "pr": pr_number, "action": "approve"})
+    return f"{base_url}{sep}{query}"
 
 
 def send_chat_message(webhook_url: str, payload: dict, *, timeout: int = 20) -> None:
@@ -106,4 +135,4 @@ def send_chat_message(webhook_url: str, payload: dict, *, timeout: int = 20) -> 
         resp.read()
 
 
-__all__ = ["build_escalation_card", "send_chat_message"]
+__all__ = ["build_escalation_card", "build_approve_url", "send_chat_message"]
