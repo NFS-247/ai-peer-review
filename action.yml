@@ -63,6 +63,18 @@ inputs:
     description: "Minutes the dev agent must be quiet (no new commit) before a review-outcome escalation pings the operator. Empty uses the repo config value (default 10). Set 0 to ping immediately."
     required: false
     default: ""
+  billing_mode:
+    description: "How this tenant is billed for AI usage: 'byok' (tenant's own keys, platform charges nothing for usage) or 'platform' (platform's keys, billed with a markup). Empty uses the repo config value (default byok)."
+    required: false
+    default: ""
+  usage_markup_multiplier:
+    description: "Multiplier applied to provider cost when billing_mode=platform (e.g. 1.3 = 30% margin). Empty uses the repo config value (default 1.0)."
+    required: false
+    default: ""
+  dev_fee_usd:
+    description: "Flat per-period dev/orchestration fee recorded for invoicing. Empty uses the repo config value (default 0)."
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -84,6 +96,9 @@ runs:
         # Legacy location, loaded only if the primary file above is absent.
         REPO_CONFIG_LEGACY_PATH: ${{ github.workspace }}/.github/ai-peer-review.json
         ESCALATION_COOLDOWN_MINUTES: ${{ inputs.escalation_cooldown_minutes }}
+        BILLING_MODE: ${{ inputs.billing_mode }}
+        USAGE_MARKUP_MULTIPLIER: ${{ inputs.usage_markup_multiplier }}
+        DEV_FEE_USD: ${{ inputs.dev_fee_usd }}
         # github.* refers to the CALLER's triggering event/repo.
         GITHUB_TOKEN: ${{ inputs.github_token }}
         GITHUB_REPOSITORY: ${{ github.repository }}

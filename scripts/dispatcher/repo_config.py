@@ -92,6 +92,14 @@ class RepoConfig:
     # immediately — the pre-Cut-1 behavior).
     escalation_cooldown_minutes: int = 10
 
+    # Billing (see usage.py). Defaults are no-ops: "byok" = the tenant brings
+    # their own keys and pays the providers directly, so the platform charges
+    # nothing for usage; markup 1.0 and dev_fee 0 add nothing. Flip to
+    # "platform" + a markup to bill the tenant for the AI it consumes.
+    billing_mode: str = "byok"
+    usage_markup_multiplier: float = 1.0
+    dev_fee_usd: float = 0.0
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "project_name": self.project_name,
@@ -116,6 +124,9 @@ class RepoConfig:
             "per_pr_cost_ceiling_usd": self.per_pr_cost_ceiling_usd,
             "daily_cost_ceiling_usd": self.daily_cost_ceiling_usd,
             "escalation_cooldown_minutes": self.escalation_cooldown_minutes,
+            "billing_mode": self.billing_mode,
+            "usage_markup_multiplier": self.usage_markup_multiplier,
+            "dev_fee_usd": self.dev_fee_usd,
         }
 
 
@@ -133,7 +144,12 @@ _STR_TUPLE_FIELDS = {
     "backend_reviewers",
     "high_stakes_reviewers",
 }
-_STR_FIELDS = {"project_name", "operator_github_login", "project_description"}
+_STR_FIELDS = {
+    "project_name",
+    "operator_github_login",
+    "project_description",
+    "billing_mode",
+}
 _INT_FIELDS = {
     "max_review_rounds",
     "routine_round_budget",
@@ -141,7 +157,12 @@ _INT_FIELDS = {
     "high_stakes_round_budget",
     "escalation_cooldown_minutes",
 }
-_FLOAT_FIELDS = {"per_pr_cost_ceiling_usd", "daily_cost_ceiling_usd"}
+_FLOAT_FIELDS = {
+    "per_pr_cost_ceiling_usd",
+    "daily_cost_ceiling_usd",
+    "usage_markup_multiplier",
+    "dev_fee_usd",
+}
 
 _KNOWN_FIELDS = _STR_TUPLE_FIELDS | _STR_FIELDS | _INT_FIELDS | _FLOAT_FIELDS
 

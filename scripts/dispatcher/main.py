@@ -64,6 +64,8 @@ from .post_review import post_ai_review
 from .redact import redact, register_secret
 from . import state as label_state
 from . import global_state
+from . import usage
+from . import usage_ledger
 from .verdict import (
     Verdict,
     compute_diff_sha256,
@@ -815,6 +817,7 @@ def _run_review_round(
     # ---- run AI reviews for this round, tracking real cost and failures
     new_verdicts: list[Verdict] = []
     round_cost = 0.0
+    usage_events: list[usage.UsageEvent] = []  # per-call metering for billing
     reviewer_failures: list[str] = []
     for reviewer in tier_cfg.reviewers:
         client = _build_client(reviewer, cfg)
@@ -837,6 +840,11 @@ def _run_review_round(
         try:
             ai_resp = client.review(prompt)
             round_cost += ai_resp.cost_usd
+            usage_events.append(usage.UsageEvent(
+                reviewer=reviewer, model=ai_resp.model,
+                input_tokens=ai_resp.input_tokens,
+                output_tokens=ai_resp.output_tokens, cost_usd=ai_resp.cost_usd,
+            ))
             try:
                 verdict = post_ai_review(
                     api=api,
@@ -854,6 +862,11 @@ def _run_review_round(
                 # Malformed AI JSON: retry once.
                 ai_resp2 = client.review(prompt)
                 round_cost += ai_resp2.cost_usd
+                usage_events.append(usage.UsageEvent(
+                    reviewer=reviewer, model=ai_resp2.model,
+                    input_tokens=ai_resp2.input_tokens,
+                    output_tokens=ai_resp2.output_tokens, cost_usd=ai_resp2.cost_usd,
+                ))
                 try:
                     verdict = post_ai_review(
                         api=api,
@@ -917,6 +930,21 @@ def _run_review_round(
         # If the ledger is unavailable, fall back to this PR's cumulative cost
         # so the daily trigger still has a non-zero signal rather than 0.
         daily_total = cross.cumulative_cost_usd
+
+    # ---- per-tenant usage & billing ledger (foundation for invoicing).
+    # Best-effort and additive: a billing-ledger hiccup must never break review.
+    if usage_events:
+        try:
+            usage_ledger.record(
+                api,
+                usage_events,
+                billing_mode=cfg.billing_mode,
+                markup_multiplier=cfg.usage_markup_multiplier,
+                dev_fee_usd=cfg.dev_fee_usd,
+                secret=secret,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     # ---- convergence + escalation with REAL inputs
     all_verdicts = _trusted_existing_verdicts(api, pr_number, secret) + new_verdicts

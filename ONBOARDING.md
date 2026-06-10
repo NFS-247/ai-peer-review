@@ -109,6 +109,24 @@ You only ever do this once. After it's done, every future project inherits it.
 
 ---
 
+## Billing modes (per tenant)
+
+Each tenant is metered on every AI call (provider · model · tokens · cost),
+recorded to a durable, signed **usage & billing ledger** in the repo. Two modes,
+set in `.peer-review.json` (or the action inputs):
+
+- **`byok`** *(default)* — the tenant brings their own keys and pays the
+  providers directly. The platform charges nothing for usage (only an optional
+  flat `dev_fee_usd`).
+- **`platform`** — the platform's keys run it; the tenant is billed for usage at
+  `usage_markup_multiplier` (e.g. `1.3` = 30% margin), plus `dev_fee_usd`.
+
+The dispatcher only **emits** accurate, attributed usage — the actual invoicing
+(reading the ledger, charging cards) is a separate billing service. For real
+billing, that service should collect usage into an **NFS-controlled datastore**,
+not rely on the per-repo ledger (which is convenient + tamper-evident, but lives
+in the tenant's own repo).
+
 ## How the pieces fit (one paragraph)
 
 `NFS-247/ai-peer-review` is the **shared engine**. Every project is its own repo

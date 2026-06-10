@@ -99,6 +99,21 @@
       "type": "integer",
       "minimum": 0,
       "description": "Minutes the dev agent must be quiet (no new commit) before a review-outcome escalation (reviewer dissent, CI persistently failing, head-lock touch, suspicious unanimity) pings the operator. A new commit resets the timer and silently re-runs review, so the phone never fires mid-iteration. Default 10. Set 0 to ping immediately (pre-Cut-1 behavior). Infra/budget escalations (cost ceiling, API outage) always ping immediately regardless."
+    },
+    "billing_mode": {
+      "type": "string",
+      "enum": ["byok", "platform"],
+      "description": "How this tenant is billed for AI usage. 'byok' (default): the tenant brings their own API keys and pays the providers directly; the platform charges nothing for usage. 'platform': the platform supplies the keys and pays the providers, then bills the tenant for usage with the markup below. The dispatcher meters usage per call either way (see the usage & billing ledger)."
+    },
+    "usage_markup_multiplier": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Applied to provider cost when billing_mode is 'platform' (e.g. 1.3 = 30% margin). Default 1.0 (no markup). Ignored in 'byok' mode."
+    },
+    "dev_fee_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Flat per-period dev/orchestration fee recorded for invoicing, on top of usage. Default 0. The actual invoicing/payment integration is a separate service that reads the usage ledger."
     }
   }
 }
