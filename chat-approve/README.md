@@ -17,6 +17,11 @@ Two locks: the **"Only myself"** deploy (only your Google account can invoke it)
 **and** a per-PR **HMAC signature** (a link only works for the exact PR + action
 it was minted for — editing `pr=90` to `pr=99` is rejected).
 
+**Rate-limit resilient:** if GitHub rate-limits the approve/merge call (HTTP
+403/429), the script retries once with a short backoff (honoring `Retry-After`),
+then — if still limited — shows a friendly **"tap to open the PR and approve
+manually"** page instead of a scary `GitHub error 403`. Your tap is never lost.
+
 ## Setup (once)
 
 ### 1. GitHub token
