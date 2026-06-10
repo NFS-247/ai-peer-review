@@ -15,7 +15,7 @@ from typing import Optional
 
 
 RESEND_API_URL = "https://api.resend.com/emails"
-DEFAULT_FROM = "TradeWatcher Dispatcher <onboarding@resend.dev>"
+DEFAULT_FROM = "AI Peer Review <onboarding@resend.dev>"
 
 
 @dataclass(frozen=True)
@@ -120,7 +120,7 @@ Reply on the PR with one of (matches Section 7 of the design doc):
 == Diff summary ==
 {diff_summary}
 
-— TradeWatcher dispatcher
+— {project_name} · AI peer review dispatcher
    Run: {workflow_run_url}
 """
 

@@ -95,7 +95,7 @@ def test_hard_round_cap():
     assert d.trigger == EscalationTrigger.HARD_ROUND_CAP
 
 
-def test_high_stakes_touching_promotion_gate_escalates_even_if_converged():
+def test_high_stakes_touching_head_lock_path_escalates_even_if_converged():
     d = decide_escalation(
         tier="high_stakes",
         round_=1,
@@ -107,8 +107,27 @@ def test_high_stakes_touching_promotion_gate_escalates_even_if_converged():
         per_pr_cost_ceiling_usd=5.0,
         api_outage_minutes=0,
         ci_failure_count_after_fix_attempts=0,
+        head_lock_paths=("backend/app/promotion_gate.py", "backend/app/safety_*.py"),
     )
     assert d.trigger == EscalationTrigger.HIGH_STAKES_AUTO
+
+
+def test_high_stakes_head_lock_empty_by_default_no_auto_escalation():
+    # With no head_lock_paths configured (generic default), a converged
+    # high-stakes PR does NOT auto-escalate on path alone.
+    d = decide_escalation(
+        tier="high_stakes",
+        round_=2,
+        round_budget=2,
+        max_review_rounds=6,
+        convergence=_converged_state(required=("claude", "gpt", "gemini")),
+        changed_files=["backend/app/promotion_gate.py"],
+        per_pr_cost_usd=0.5,
+        per_pr_cost_ceiling_usd=5.0,
+        api_outage_minutes=0,
+        ci_failure_count_after_fix_attempts=0,
+    )
+    assert d.trigger == EscalationTrigger.NONE
 
 
 def test_high_stakes_first_dissent_escalates_immediately():

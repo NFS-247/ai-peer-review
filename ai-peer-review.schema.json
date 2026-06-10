@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "AI Peer Review per-repo config",
-  "description": "Drop this file at .github/ai-peer-review.json in a consuming repo to tailor classification, reviewer rosters, and ceilings. Every field is optional; omitted fields use safe defaults. Unknown keys are ignored (forward compatible). Wrong types fail the run loudly so a bad config can never silently misclassify.",
+  "description": "Drop this file at .peer-review.json in a consuming repo's root (legacy location .github/ai-peer-review.json still works) to tailor classification, reviewer rosters, head-lock paths, ceilings, and escalation timing. Every field is optional; omitted fields use generic safe defaults. Unknown keys are ignored (forward compatible). Wrong types fail the run loudly so a bad config can never silently misclassify. NOTE: the format is JSON, not YAML — the dispatcher is stdlib-only and ships no YAML parser.",
   "type": "object",
   "additionalProperties": true,
   "properties": {
@@ -12,6 +12,15 @@
     "operator_github_login": {
       "type": "string",
       "description": "GitHub login of the human operator who can issue OPERATOR commands and receives escalations."
+    },
+    "project_description": {
+      "type": "string",
+      "description": "One or two sentences about what this repo is, injected into every reviewer prompt (e.g. 'a paper-only trading system; it never places broker orders'). Tailors reviews to the tenant's domain. Default: empty (generic prompt)."
+    },
+    "review_guidance": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Project-specific bug classes for reviewers to hunt for, injected into the prompt as a 'specifically for THIS project, also look for' list (e.g. lookahead bias, broker order paths). Default: empty (generic adversarial review only)."
     },
     "high_stakes_paths": {
       "type": "array",
@@ -48,6 +57,11 @@
       "items": { "type": "string" },
       "description": "Path prefixes considered backend code (not safety-relevant), e.g. src/, tests/."
     },
+    "head_lock_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "fnmatch globs (same syntax as high_stakes_paths). A high-stakes PR touching any of these requires explicit operator sign-off before merge even when all AI reviewers approve. Use for the most safety-critical files (e.g. broker/promotion/safety modules). Default: empty (tier rules alone)."
+    },
     "routine_reviewers": {
       "type": "array",
       "items": { "type": "string", "enum": ["claude", "gpt", "gemini"] },
@@ -80,6 +94,11 @@
       "type": "number",
       "minimum": 0,
       "description": "Rolling 24h spend ceiling across the repo."
+    },
+    "escalation_cooldown_minutes": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Minutes the dev agent must be quiet (no new commit) before a review-outcome escalation (reviewer dissent, CI persistently failing, head-lock touch, suspicious unanimity) pings the operator. A new commit resets the timer and silently re-runs review, so the phone never fires mid-iteration. Default 10. Set 0 to ping immediately (pre-Cut-1 behavior). Infra/budget escalations (cost ceiling, API outage) always ping immediately regardless."
     }
   }
 }

@@ -122,3 +122,45 @@ def test_to_dict_roundtrips_through_from_mapping():
     cfg = RC.RepoConfig(project_name="RoundTrip", high_stakes_reviewers=("claude",))
     cfg2 = RC.from_mapping(cfg.to_dict())
     assert cfg2 == cfg
+
+
+def test_new_cut1_fields_load_from_config(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({
+        "head_lock_paths": ["src/payments/**"],
+        "escalation_cooldown_minutes": 3,
+        "project_description": "a payments app",
+        "review_guidance": ["PCI scope", "idempotency"],
+    }), encoding="utf-8")
+    cfg = RC.load_repo_config(p)
+    assert cfg.head_lock_paths == ("src/payments/**",)
+    assert cfg.escalation_cooldown_minutes == 3
+    assert cfg.project_description == "a payments app"
+    assert cfg.review_guidance == ("PCI scope", "idempotency")
+
+
+def test_generic_defaults_carry_no_stocktrader_rules():
+    # The genericization contract: dispatcher defaults must NOT carry any one
+    # project's specific rules. StockTrader's live in its .peer-review.json.
+    cfg = RC.RepoConfig()
+    assert cfg.project_name == ""
+    assert cfg.head_lock_paths == ()
+    assert cfg.review_guidance == ()
+    assert "paper_only" not in cfg.content_scan_safety_tokens
+    assert not any("schwab" in pat for pat in cfg.high_stakes_paths)
+    assert "backend/app/" not in cfg.backend_path_roots
+
+
+def test_resolve_repo_config_prefers_first_existing(tmp_path):
+    primary = tmp_path / "primary.json"
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(json.dumps({"project_name": "FromLegacy"}), encoding="utf-8")
+    # primary absent -> legacy used
+    cfg = RC.resolve_repo_config(primary, legacy)
+    assert cfg.project_name == "FromLegacy"
+    # primary present -> primary wins
+    primary.write_text(json.dumps({"project_name": "FromPrimary"}), encoding="utf-8")
+    cfg2 = RC.resolve_repo_config(primary, legacy)
+    assert cfg2.project_name == "FromPrimary"
+    # neither -> generic defaults
+    assert RC.resolve_repo_config(tmp_path / "a.json", tmp_path / "b.json") == RC.RepoConfig()

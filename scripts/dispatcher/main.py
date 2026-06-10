@@ -478,7 +478,9 @@ def _run_convergence_only(
         # converged; do not mark ready in that case.
         from .escalation import _diff_touches_head_lock  # local import
 
-        if tier == "high_stakes" and _diff_touches_head_lock(changed_files):
+        if tier == "high_stakes" and _diff_touches_head_lock(
+            changed_files, cfg.repo_config.head_lock_paths
+        ):
             return 0
         if label_state.LABEL_READY not in labels:
             label_state.set_ready(api, pr_number, labels)
@@ -589,6 +591,8 @@ def _run_review_round(
             tier=tier,
             round_=round_,
             prior_review_history=[],
+            project_description=cfg.repo_config.project_description,
+            review_guidance=cfg.repo_config.review_guidance,
         )
         try:
             ai_resp = client.review(prompt)
@@ -702,6 +706,7 @@ def _run_review_round(
         daily_cost_usd=daily_total,
         daily_cost_ceiling_usd=cfg.daily_cost_ceiling_usd,
         required_reviewer_unavailable=bool(required_failed),
+        head_lock_paths=cfg.repo_config.head_lock_paths,
     )
 
     reviewer_summaries = {
