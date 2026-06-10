@@ -102,7 +102,7 @@
   "routine_round_budget": 3,
   "backend_round_budget": 3,
   "high_stakes_round_budget": 2,
-  "per_pr_cost_ceiling_usd": 5.0,
+  "per_pr_cost_ceiling_usd": 8.0,
   "daily_cost_ceiling_usd": 20.0,
 
   "escalation_cooldown_minutes": 10

@@ -90,6 +90,9 @@ def decide_escalation(
 ) -> EscalationDecision:
     """Decide whether this PR should be escalated. Order of checks matters."""
 
+    # The 24h DAILY ceiling is a project-wide stop: it pauses OTHER in-flight
+    # PRs and the operator must see it, so it escalates even if this PR has
+    # converged.
     if daily_cost_ceiling_usd > 0 and daily_cost_usd >= daily_cost_ceiling_usd:
         return EscalationDecision(
             trigger=EscalationTrigger.DAILY_COST_SPIKE,
@@ -99,12 +102,18 @@ def decide_escalation(
                    f"All in-flight reviews are paused pending operator review.",
         )
 
-    if per_pr_cost_usd >= per_pr_cost_ceiling_usd:
+    # A per-PR cost ceiling exists to stop BURNING MORE money iterating on a PR
+    # that won't converge. Once the PR HAS converged, the spend is already
+    # incurred and no further reviews will run, so a per-PR cost escalation is
+    # pure noise — the PR is simply ready for merge. Suppress it when converged
+    # and fall through; a converged head-lock PR then correctly routes to the
+    # operator-sign-off path below instead of showing a misleading "cost" reason.
+    if per_pr_cost_usd >= per_pr_cost_ceiling_usd and not convergence.converged:
         return EscalationDecision(
             trigger=EscalationTrigger.COST_SPIKE,
             reason_short="per-PR cost ceiling reached",
             detail=f"This PR has consumed ${per_pr_cost_usd:.2f} in API tokens "
-                   f"(ceiling ${per_pr_cost_ceiling_usd:.2f}).",
+                   f"(ceiling ${per_pr_cost_ceiling_usd:.2f}) without converging.",
         )
 
     # A required reviewer that cannot be called at all (missing key or provider
@@ -136,7 +145,10 @@ def decide_escalation(
                    "fixed. The change needs a fix pushed before it can merge.",
         )
 
-    if round_ >= max_review_rounds:
+    # "Out of rounds WITHOUT converging." A PR that converged on its final
+    # allowed round is ready, not capped — suppress when converged (same
+    # principle as the per-PR cost suppression above).
+    if round_ >= max_review_rounds and not convergence.converged:
         return EscalationDecision(
             trigger=EscalationTrigger.HARD_ROUND_CAP,
             reason_short="hard round cap reached",
