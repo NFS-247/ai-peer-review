@@ -72,3 +72,21 @@ def test_no_cache_fields_is_plain_cost(monkeypatch):
     monkeypatch.setattr(call_gpt, "request_json_with_retry", lambda req, provider: payload)
     resp = call_gpt.GPTClient(api_key="k", model="gpt-5").review("p")
     assert resp.cost_usd == round((40_000 * 1.25 + 1_000 * 10.0) / 1_000_000, 6)
+
+
+def test_gemini_quotes_model_in_url(monkeypatch):
+    # The model is operator-configurable and lands in the URL path; injection
+    # chars must be percent-encoded so they cannot add query params.
+    captured = {}
+
+    def fake(req, provider):
+        captured["url"] = req.full_url
+        return {
+            "candidates": [{"content": {"parts": [{"text": "{}"}]}}],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1},
+        }
+
+    monkeypatch.setattr(call_gemini, "request_json_with_retry", fake)
+    call_gemini.GeminiClient(api_key="k", model="evil?key=LEAK&x=1").review("p")
+    assert "evil%3Fkey%3DLEAK%26x%3D1" in captured["url"]
+    assert "evil?key=LEAK" not in captured["url"]
