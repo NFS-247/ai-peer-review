@@ -105,6 +105,61 @@ def build_escalation_card(
     }
 
 
+def build_ready_card(
+    *,
+    project_name: str,
+    pr_number: int,
+    pr_url: str,
+    pr_title: str,
+    tier: str,
+    approve_merge_url: str = "",
+) -> dict:
+    """Build a Google Chat cardsV2 "ready to merge" notification.
+
+    Posted on the dispatcher:ready-for-merge transition for ALL tiers (not just
+    high-stakes escalations), so the operator's phone is pinged whenever a PR
+    converges and is only waiting on their merge click. Carries a "🚀 Approve &
+    Merge" button when configured, plus an "Open PR" button. The dispatcher
+    never merges — the operator does.
+    """
+    buttons = []
+    if approve_merge_url:
+        buttons.append(
+            {"text": "🚀 Approve & Merge", "onClick": {"openLink": {"url": approve_merge_url}}}
+        )
+    buttons.append(
+        {"text": f"Open PR #{pr_number}", "onClick": {"openLink": {"url": pr_url}}}
+    )
+
+    body = (
+        f"<b>{_esc(pr_title)}</b><br>"
+        "All required reviewers approved and CI is green. "
+        "<b>Ready for your merge.</b> The dispatcher never merges."
+    )
+
+    return {
+        "cardsV2": [
+            {
+                "cardId": f"ready-pr-{pr_number}",
+                "card": {
+                    "header": {
+                        "title": f"{project_name}: PR #{pr_number} ready to merge",
+                        "subtitle": f"tier: {tier} · all reviewers approved",
+                    },
+                    "sections": [
+                        {
+                            "widgets": [
+                                {"textParagraph": {"text": body}},
+                                {"buttonList": {"buttons": buttons}},
+                            ]
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+
 def sign_action(secret: str, *, repo: str, pr_number: int, action: str) -> str:
     """HMAC-SHA256 hex over the canonical ``repo:pr:action`` string.
 
@@ -162,6 +217,7 @@ def send_chat_message(webhook_url: str, payload: dict, *, timeout: int = 20) -> 
 
 __all__ = [
     "build_escalation_card",
+    "build_ready_card",
     "build_approve_url",
     "sign_action",
     "send_chat_message",

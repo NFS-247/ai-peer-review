@@ -18,6 +18,13 @@ on:
     types: [created]
   check_run:
     types: [completed]
+  # Periodic sweep so a deferred escalation actually pings once the dev agent
+  # goes quiet past the cooldown. The dispatcher is event-driven, so without
+  # this a PR that stalls after reviewers request changes would never reach
+  # your phone (no further event arrives). Scheduled runs do ONLY the cheap
+  # cooldown sweep — no AI calls. GitHub may delay scheduled runs a few minutes.
+  schedule:
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: read
@@ -36,11 +43,13 @@ jobs:
     if: |
       github.event_name == 'pull_request' ||
       github.event_name == 'check_run' ||
+      github.event_name == 'schedule' ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
     steps:
       # Check out THIS repo's base branch (trusted) so the dispatcher can read
-      # its .github/ai-peer-review.json. Never the PR head. Safe to omit if you
-      # don't ship a config file (the dispatcher then uses safe defaults).
+      # its .peer-review.json (root; legacy .github/ai-peer-review.json also
+      # works). Never the PR head. Safe to omit if you don't ship a config file
+      # (the dispatcher then uses generic safe defaults).
       - name: Checkout base branch (never PR head)
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
         with:
@@ -62,3 +71,6 @@ jobs:
           # Optional: one-tap Approve / Approve & Merge buttons in the Chat card.
           approve_webapp_url: ${{ secrets.APPROVE_WEBAPP_URL }}
           approve_signing_secret: ${{ secrets.APPROVE_SIGNING_SECRET }}
+          # Optional: minutes the dev agent must be quiet before a review-outcome
+          # escalation pings you (default 10 from .peer-review.json; 0 = immediate).
+          # escalation_cooldown_minutes: "10"

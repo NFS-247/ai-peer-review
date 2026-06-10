@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -32,9 +33,19 @@ from .call_gpt import GPTClient
 from .classify import classify
 from .config import DispatcherConfig, load_from_env
 from .converge import CIStatus, check_convergence
-from .call_google_chat import build_approve_url, build_escalation_card, send_chat_message
+from .call_google_chat import (
+    build_approve_url,
+    build_escalation_card,
+    build_ready_card,
+    send_chat_message,
+)
 from .email_send import EmailMessage, ResendClient, build_escalation_email
-from .escalation import EscalationTrigger, decide_escalation
+from .escalation import (
+    COOLDOWN_GATED_TRIGGERS,
+    EscalationTrigger,
+    cooldown_elapsed,
+    decide_escalation,
+)
 from .github_api import GitHubAPI, PRComment
 from .parse_reply import (
     CMD_APPROVE,
@@ -366,6 +377,187 @@ def _send_escalation(
         )
 
 
+def _now_ts() -> float:
+    """Wall-clock UTC timestamp. Module-level so tests can monkeypatch it."""
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _record_pending_escalation(
+    cross: "label_state.CrossRunState",
+    head_sha: str,
+    *,
+    trigger: str,
+    reason_short: str,
+    detail: str,
+) -> None:
+    """Record/refresh a deferred (cooldown-gated) escalation on ``cross``.
+
+    The quiet timer (re)starts only when this is a NEW stall — a different head
+    than the one already pending, or none pending yet. Re-evaluating the same
+    head (e.g. an INVESTIGATE re-run) keeps the original timer so the operator
+    isn't kept waiting forever by repeated same-head events.
+    """
+    if cross.pending_escalation_head_sha != head_sha or not cross.pending_escalation_since:
+        cross.pending_escalation_since = _now_ts()
+    cross.pending_escalation_head_sha = head_sha
+    cross.pending_escalation_trigger = trigger
+    cross.pending_escalation_reason_short = reason_short
+    cross.pending_escalation_detail = detail
+
+
+def _supersede_prior_escalation(
+    api: GitHubAPI, pr_number: int, cross: "label_state.CrossRunState"
+) -> None:
+    """A new commit landed after a cooldown escalation already pinged: clear the
+    stale escalated state and re-arm, so a fresh stall produces exactly one new
+    ping. Incoming webhooks can't edit the old card, so we post a short note."""
+    labels = api.list_labels(pr_number)
+    if label_state.LABEL_ESCALATED in labels:
+        api.remove_label(pr_number, label_state.LABEL_ESCALATED)
+    cross.escalated_head_sha = ""
+    cross.clear_pending_escalation()
+    api.post_comment(
+        pr_number,
+        "🔄 New commit after the last escalation — re-reviewing. The previous "
+        "escalation is superseded; you'll get one fresh ping only if this "
+        "stalls again.",
+    )
+
+
+def _mark_ready_and_notify(
+    *,
+    cfg: DispatcherConfig,
+    api: GitHubAPI,
+    pr_number: int,
+    pr_url: str,
+    pr_title: str,
+    tier: str,
+    body: str,
+) -> None:
+    """Mark a PR ready for operator merge and notify — once.
+
+    Posts the durable PR comment AND a mobile "ready to merge" Chat ping for
+    ALL tiers (not just high-stakes escalations), but only on the transition to
+    ready, so a re-evaluation never double-pings. The Chat ping is best-effort;
+    its failure never blocks marking the PR ready.
+    """
+    labels = api.list_labels(pr_number)
+    if label_state.LABEL_READY in labels:
+        return  # already ready: do not duplicate the comment or the ping
+    label_state.set_ready(api, pr_number, labels)
+    api.post_comment(pr_number, body)
+    if not cfg.google_chat_webhook_url:
+        return
+    try:
+        card = build_ready_card(
+            project_name=cfg.project_name,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            pr_title=pr_title,
+            tier=tier,
+            approve_merge_url=build_approve_url(
+                cfg.approve_webapp_url or "",
+                repo=cfg.repo_name,
+                pr_number=pr_number,
+                action="approve_merge",
+                signing_secret=cfg.approve_signing_secret or "",
+            ),
+        )
+        send_chat_message(cfg.google_chat_webhook_url, card)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"ready-for-merge Chat ping failed ({type(exc).__name__}); "
+            f"PR is still marked ready via label + comment.",
+            file=sys.stderr,
+        )
+
+
+def _maybe_fire_due_escalation(*, cfg: DispatcherConfig, api: GitHubAPI, pr_number: int) -> bool:
+    """Fire a deferred escalation if its cooldown has elapsed on the same head.
+
+    Called on every event that could be the moment a quiet stall becomes ripe:
+    CI completion, a scheduled sweep, or the tail of a review round. Returns
+    True if it pinged. No-ops (and leaves pending intact) when not yet due, and
+    self-heals when the stall has resolved (ready/paused/escalated already, or a
+    new commit superseded the pending head).
+    """
+    secret = cfg.verdict_secret or ""
+    if not secret:
+        return False
+    ctx = _resolve_pr_context(api, pr_number)
+    if ctx["state"] != "open":
+        return False
+    labels = api.list_labels(pr_number)
+    if (
+        label_state.is_paused(labels)
+        or label_state.is_escalated(labels)
+        or label_state.LABEL_READY in labels
+    ):
+        return False
+    cross = label_state.read_cross_run_state(api, pr_number, DISPATCHER_BOT_LOGIN, secret)
+    if not cooldown_elapsed(
+        pending_since=cross.pending_escalation_since,
+        pending_head_sha=cross.pending_escalation_head_sha,
+        current_head_sha=ctx["head_sha"],
+        now_ts=_now_ts(),
+        cooldown_minutes=cfg.escalation_cooldown_minutes,
+    ):
+        return False
+
+    tier = label_state.read_tier_label(labels) or "high_stakes"
+    verdicts = _trusted_existing_verdicts(api, pr_number, secret)
+    reviewer_summaries = {v.reviewer: f"{v.verdict} (round {v.round})" for v in verdicts}
+    reason_short = cross.pending_escalation_reason_short or "reviewers requested changes"
+    detail = cross.pending_escalation_detail
+
+    label_state.set_escalated(api, pr_number, labels)
+    cross.escalated_head_sha = ctx["head_sha"]
+    cross.clear_pending_escalation()
+    label_state.write_cross_run_state(api, pr_number, cross, secret)
+
+    _send_escalation(
+        cfg=cfg,
+        api=api,
+        pr_number=pr_number,
+        pr_url=ctx["url"],
+        pr_title=ctx["title"],
+        tier=tier,
+        branch=ctx["branch"],
+        head_sha=ctx["head_sha"],
+        reason_short=reason_short,
+        detail=detail,
+        reviewer_summaries=reviewer_summaries,
+        ci_status=_ci_status_for(api, ctx["head_sha"]),
+        diff_summary="",
+        workflow_run_url=os.environ.get("GITHUB_RUN_URL", ""),
+    )
+    return True
+
+
+def _run_cooldown_sweep(*, cfg: DispatcherConfig, api: GitHubAPI) -> int:
+    """schedule event: fire any deferred escalations whose cooldown has elapsed.
+
+    The dispatcher is event-driven; without this periodic sweep a PR that goes
+    quiet after reviewers requested changes would never reach the operator's
+    phone (no further event arrives to wake it). Best-effort per PR.
+    """
+    if not cfg.verdict_secret:
+        return 0
+    try:
+        pr_numbers = api.list_open_pull_numbers()
+    except Exception:  # noqa: BLE001
+        return 0
+    for n in pr_numbers:
+        try:
+            labels = api.list_labels(n)
+            if not any(lbl.startswith(label_state.TIER_LABEL_PREFIX) for lbl in labels):
+                continue
+            _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=n)
+        except Exception:  # noqa: BLE001
+            continue
+    return 0
+
+
 def _resolve_pr_context(api: GitHubAPI, pr_number: int) -> dict:
     pr = api.get_pr(pr_number)
     return {
@@ -434,33 +626,54 @@ def _run_convergence_only(
     diff_text = api.get_pr_diff(pr_number)
     ci_status = _ci_status_for(api, ctx["head_sha"])
 
-    # Persistent-CI-failure handling on a CI-complete event: count the failed
-    # attempt and escalate once it has failed across two rounds.
-    if ci_status == CIStatus.FAILURE:
-        cross = label_state.read_cross_run_state(
-            api, pr_number, DISPATCHER_BOT_LOGIN, secret
-        )
-        cross.ci_fix_attempts += 1
+    cross = label_state.read_cross_run_state(api, pr_number, DISPATCHER_BOT_LOGIN, secret)
+
+    # A new commit after a prior cooldown escalation supersedes it.
+    if cross.escalated_head_sha and cross.escalated_head_sha != ctx["head_sha"]:
+        _supersede_prior_escalation(api, pr_number, cross)
         label_state.write_cross_run_state(api, pr_number, cross, secret)
+        labels = api.list_labels(pr_number)
+
+    # Persistent-CI-failure handling on a CI-complete event: count the failed
+    # attempt and, once it has failed across two rounds, escalate — but defer
+    # the ping through the cooldown (CI failing usually means the dev is still
+    # pushing fixes; don't ping mid-iteration).
+    if ci_status == CIStatus.FAILURE:
+        cross.ci_fix_attempts += 1
         if cross.ci_fix_attempts >= 2 and not label_state.is_escalated(labels):
-            label_state.set_escalated(api, pr_number, api.list_labels(pr_number))
-            _send_escalation(
-                cfg=cfg,
-                api=api,
-                pr_number=pr_number,
-                pr_url=ctx["url"],
-                pr_title=ctx["title"],
-                tier=tier,
-                branch=ctx["branch"],
-                head_sha=ctx["head_sha"],
-                reason_short="CI is persistently failing",
-                detail="CI has failed across two rounds without being fixed. "
-                       "The change needs a fix pushed before it can merge.",
-                reviewer_summaries={},
-                ci_status=ci_status,
-                diff_summary="",
-                workflow_run_url=os.environ.get("GITHUB_RUN_URL", ""),
-            )
+            if cfg.escalation_cooldown_minutes > 0:
+                _record_pending_escalation(
+                    cross,
+                    ctx["head_sha"],
+                    trigger=EscalationTrigger.CI_PERSISTENT_FAILURE.value,
+                    reason_short="CI is persistently failing",
+                    detail="CI has failed across two rounds without being fixed. "
+                           "The change needs a fix pushed before it can merge.",
+                )
+                label_state.write_cross_run_state(api, pr_number, cross, secret)
+                _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=pr_number)
+            else:
+                label_state.write_cross_run_state(api, pr_number, cross, secret)
+                label_state.set_escalated(api, pr_number, api.list_labels(pr_number))
+                _send_escalation(
+                    cfg=cfg,
+                    api=api,
+                    pr_number=pr_number,
+                    pr_url=ctx["url"],
+                    pr_title=ctx["title"],
+                    tier=tier,
+                    branch=ctx["branch"],
+                    head_sha=ctx["head_sha"],
+                    reason_short="CI is persistently failing",
+                    detail="CI has failed across two rounds without being fixed. "
+                           "The change needs a fix pushed before it can merge.",
+                    reviewer_summaries={},
+                    ci_status=ci_status,
+                    diff_summary="",
+                    workflow_run_url=os.environ.get("GITHUB_RUN_URL", ""),
+                )
+        else:
+            label_state.write_cross_run_state(api, pr_number, cross, secret)
         return 0
 
     convergence = check_convergence(
@@ -481,14 +694,41 @@ def _run_convergence_only(
         if tier == "high_stakes" and _diff_touches_head_lock(
             changed_files, cfg.repo_config.head_lock_paths
         ):
+            # Operator sign-off required. Defer the ping through the cooldown
+            # (the review round records the same pending stall); fire if due.
+            if cfg.escalation_cooldown_minutes > 0 and not cross.has_pending_escalation():
+                _record_pending_escalation(
+                    cross,
+                    ctx["head_sha"],
+                    trigger=EscalationTrigger.HIGH_STAKES_AUTO.value,
+                    reason_short="high-stakes file changed; operator review required",
+                    detail="This PR touches files that require explicit operator "
+                           "approval before merge, regardless of AI convergence.",
+                )
+                label_state.write_cross_run_state(api, pr_number, cross, secret)
+            _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=pr_number)
             return 0
-        if label_state.LABEL_READY not in labels:
-            label_state.set_ready(api, pr_number, labels)
-            api.post_comment(
-                pr_number,
-                "✅ CI passed and all required reviewers approved this head "
-                "SHA. **Ready for operator merge.** Dispatcher does NOT merge.",
-            )
+        # Converged and clear: ready for merge. Drop any pending stall, then
+        # notify once (durable comment + mobile ping for all tiers).
+        if cross.has_pending_escalation() or cross.escalated_head_sha:
+            cross.clear_pending_escalation()
+            cross.escalated_head_sha = ""
+            label_state.write_cross_run_state(api, pr_number, cross, secret)
+        _mark_ready_and_notify(
+            cfg=cfg,
+            api=api,
+            pr_number=pr_number,
+            pr_url=ctx["url"],
+            pr_title=ctx["title"],
+            tier=tier,
+            body="✅ CI passed and all required reviewers approved this head "
+                 "SHA. **Ready for operator merge.** Dispatcher does NOT merge.",
+        )
+        return 0
+
+    # Not converged: a CI-complete event during a quiet stall is a chance to
+    # fire a deferred escalation whose cooldown has elapsed.
+    _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=pr_number)
     return 0
 
 
@@ -650,7 +890,7 @@ def _run_review_round(
     # fix-attempt accounting, convergence, and escalation alike.
     ci_status_now = _ci_status_for(api, head_sha)
 
-    # ---- update cross-run state
+    # ---- update cross-run state (numeric accounting)
     required_failed = [r for r in reviewer_failures if r in tier_cfg.reviewers]
     cross.cumulative_cost_usd += round_cost
     if required_failed:
@@ -663,7 +903,12 @@ def _run_review_round(
         cross.ci_fix_attempts += 1
     else:
         cross.ci_fix_attempts = 0
-    label_state.write_cross_run_state(api, pr_number, cross, secret)
+
+    # If a new commit landed after a cooldown escalation already fired, that
+    # escalation is stale — the dev addressed feedback. Clear it and re-arm so
+    # a fresh stall produces exactly one new ping.
+    if cross.escalated_head_sha and cross.escalated_head_sha != head_sha:
+        _supersede_prior_escalation(api, pr_number, cross)
 
     # ---- global 24h spend accounting (cross-PR ceiling)
     try:
@@ -715,18 +960,56 @@ def _run_review_round(
     for r in required_failed:
         reviewer_summaries.setdefault(r, "API failure this round")
 
-    if convergence.converged and decision.trigger == EscalationTrigger.NONE:
-        labels = api.list_labels(pr_number)
-        label_state.set_ready(api, pr_number, labels)
-        api.post_comment(
-            pr_number,
-            "✅ All required reviewers approved this head SHA. **Ready for "
-            "operator merge.** Dispatcher does NOT merge — operator clicks "
-            "the merge button manually.",
+    # ---- decide what to persist + whether/when to notify, then write state ONCE
+    ready = convergence.converged and decision.trigger == EscalationTrigger.NONE
+    deferred = False
+    if ready:
+        # The stall (if any) resolved; drop any pending/fired escalation state.
+        cross.clear_pending_escalation()
+        cross.escalated_head_sha = ""
+    elif decision.trigger != EscalationTrigger.NONE:
+        if (
+            decision.trigger in COOLDOWN_GATED_TRIGGERS
+            and cfg.escalation_cooldown_minutes > 0
+        ):
+            # Defer: record the pending stall; do NOT ping yet. The phone fires
+            # only once the dev agent goes quiet (the scheduled sweep, or a
+            # later event whose cooldown check passes) — never mid-iteration.
+            _record_pending_escalation(
+                cross,
+                head_sha,
+                trigger=decision.trigger.value,
+                reason_short=decision.reason_short,
+                detail=decision.detail,
+            )
+            deferred = True
+        else:
+            # Immediate (infra/budget) escalation supersedes any pending stall.
+            cross.clear_pending_escalation()
+
+    label_state.write_cross_run_state(api, pr_number, cross, secret)
+
+    # ---- side effects
+    if ready:
+        _mark_ready_and_notify(
+            cfg=cfg,
+            api=api,
+            pr_number=pr_number,
+            pr_url=pr_url,
+            pr_title=pr_title,
+            tier=tier,
+            body="✅ All required reviewers approved this head SHA. **Ready for "
+                 "operator merge.** Dispatcher does NOT merge — operator clicks "
+                 "the merge button manually.",
         )
         return 0
 
     if decision.trigger != EscalationTrigger.NONE:
+        if deferred:
+            # The cooldown may already have elapsed (e.g. an INVESTIGATE re-run
+            # on a head that's been quiet); fire now if due, else stay silent.
+            _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=pr_number)
+            return 0
         label_state.set_escalated(api, pr_number, api.list_labels(pr_number))
         # The 24h global spend trigger is a project-wide safety stop: pause
         # ALL in-flight PRs (not just this one), matching the design's stated
@@ -800,6 +1083,13 @@ def run() -> int:
 
     api = GitHubAPI(cfg.github_token, cfg.repo_owner, cfg.repo_name)
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+
+    # ---- schedule: periodic sweep that fires deferred escalations once the dev
+    # agent has gone quiet past the cooldown. There is no PR in a schedule
+    # event, so it is handled before the per-PR routing below.
+    if event_name == "schedule":
+        return _run_cooldown_sweep(cfg=cfg, api=api)
+
     event = _read_event()
 
     pr_number = _pr_number_from_event(event, event_name)

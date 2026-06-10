@@ -187,10 +187,32 @@ def decide_escalation(
     )
 
 
+def cooldown_elapsed(
+    *,
+    pending_since: float,
+    pending_head_sha: str,
+    current_head_sha: str,
+    now_ts: float,
+    cooldown_minutes: int,
+) -> bool:
+    """Whether a deferred escalation is now due to ping. Pure function.
+
+    Due iff there IS a pending escalation, the cooldown is enabled, the head
+    has NOT changed since it was recorded (a new commit supersedes/re-arms),
+    and the quiet window has elapsed.
+    """
+    if not pending_since or cooldown_minutes <= 0:
+        return False
+    if pending_head_sha != current_head_sha:
+        return False  # superseded by a new commit
+    return (now_ts - pending_since) >= cooldown_minutes * 60
+
+
 __all__ = [
     "EscalationTrigger",
     "EscalationDecision",
     "decide_escalation",
     "HEAD_LOCK_PATH_PATTERNS",
     "COOLDOWN_GATED_TRIGGERS",
+    "cooldown_elapsed",
 ]
