@@ -99,3 +99,35 @@ def test_non_retryable_status_raises_immediately():
             A.request_json_with_retry(object(), provider="X", sleep=slept.append)
     assert "HTTP 400" in str(ei.value)
     assert slept == []  # 4xx (non-429) is not retried
+
+
+def test_5xx_not_retried_to_avoid_double_billing():
+    # 500/502/504 may have been processed (and billed) server-side; retrying
+    # without an idempotency key could double-charge, so they raise at once.
+    slept = []
+
+    def fake_urlopen(req, timeout=0):
+        raise _http_error(500)
+
+    with mock.patch.object(A.urllib.request, "urlopen", fake_urlopen):
+        with pytest.raises(RuntimeError):
+            A.request_json_with_retry(object(), provider="X", sleep=slept.append)
+    assert slept == []
+
+
+def test_retry_after_is_capped_at_max_delay():
+    # A hostile/buggy upstream sending a huge Retry-After must not stall the job.
+    calls = []
+    slept = []
+
+    def fake_urlopen(req, timeout=0):
+        calls.append(1)
+        if len(calls) == 1:
+            raise _http_error(429, retry_after=86400)  # 24h
+        return _Resp()
+
+    with mock.patch.object(A.urllib.request, "urlopen", fake_urlopen):
+        A.request_json_with_retry(
+            object(), provider="X", max_delay=60.0, sleep=slept.append
+        )
+    assert slept == [60.0]  # capped, not 86400

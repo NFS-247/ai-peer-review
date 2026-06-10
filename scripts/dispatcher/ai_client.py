@@ -18,8 +18,11 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-# Transient HTTP statuses worth retrying: rate limit + transient server errors.
-RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+# Statuses safe to retry WITHOUT idempotency keys: the request was rejected
+# before the provider processed (and billed) it. 429 = rate limited, 503 =
+# service unavailable. We deliberately do NOT retry 500/502/504 — those may have
+# been partially processed, so a blind retry could double-charge.
+RETRYABLE_STATUS = frozenset({429, 503})
 
 
 def _retry_after_seconds(exc: urllib.error.HTTPError) -> Optional[float]:
@@ -43,6 +46,7 @@ def request_json_with_retry(
     timeout: int = 120,
     max_attempts: int = 4,
     base_delay: float = 2.0,
+    max_delay: float = 60.0,
     sleep=time.sleep,
 ) -> dict:
     """POST ``req`` and parse the JSON response, retrying transient failures.
@@ -52,6 +56,10 @@ def request_json_with_retry(
     no longer fails a whole review round. After ``max_attempts`` it raises
     ``RuntimeError`` with the provider + status, which the orchestrator treats
     as a reviewer being unavailable (and escalates).
+
+    Every wait is capped at ``max_delay`` seconds — including a server-sent
+    ``Retry-After`` — so a buggy or hostile upstream (e.g. ``Retry-After:
+    86400``) can never stall the job; the round fails fast and escalates.
     """
     for attempt in range(1, max_attempts + 1):
         try:
@@ -63,14 +71,14 @@ def request_json_with_retry(
                 delay = _retry_after_seconds(exc)
                 if delay is None:
                     delay = base_delay * (2 ** (attempt - 1))
-                sleep(delay)
+                sleep(min(delay, max_delay))
                 continue
             raise RuntimeError(
                 f"{provider} API HTTP {exc.code}: {detail[:500]}"
             ) from exc
         except urllib.error.URLError as exc:
             if attempt < max_attempts:
-                sleep(base_delay * (2 ** (attempt - 1)))
+                sleep(min(base_delay * (2 ** (attempt - 1)), max_delay))
                 continue
             raise RuntimeError(
                 f"{provider} API request failed: {exc.reason}"
