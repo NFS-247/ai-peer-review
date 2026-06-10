@@ -5,7 +5,7 @@ model ACTUALLY in use, with an env override for exact rates — not a single fix
 rate for the most expensive default model.
 """
 
-from scripts.dispatcher.pricing import cost_for, resolve_prices
+from scripts.dispatcher.pricing import cost_for, resolve_prices, token_cost
 
 
 def test_exact_model_match():
@@ -76,3 +76,45 @@ def test_cost_for_uses_resolved_price():
 def test_cost_for_respects_env_override():
     env = {"ANTHROPIC_INPUT_PRICE_PER_M": "0", "ANTHROPIC_OUTPUT_PRICE_PER_M": "0"}
     assert cost_for("claude", "claude-opus-4-7", 5_000, 5_000, env=env) == 0.0
+
+
+def test_token_cost_no_cache_equals_cost_for():
+    # With no cache fields, the cache-aware path must match the plain formula —
+    # so existing behavior is unchanged when a provider reports no caching.
+    a = token_cost("gpt", "gpt-5", fresh_input_tokens=40_000, output_tokens=1_000)
+    b = cost_for("gpt", "gpt-5", 40_000, 1_000)
+    assert a == b
+
+
+def test_cached_input_billed_at_discount():
+    # gpt-5 input $1.25/M; cached at 0.5x. 1M cached input = $0.625, not $1.25.
+    cached_only = token_cost(
+        "gpt", "gpt-5", fresh_input_tokens=0, cached_input_tokens=1_000_000, output_tokens=0
+    )
+    assert cached_only == 0.625
+    # A round whose input is mostly a cache hit costs far less than full-rate.
+    full = token_cost("gpt", "gpt-5", fresh_input_tokens=1_000_000, output_tokens=0)
+    mostly_cached = token_cost(
+        "gpt", "gpt-5", fresh_input_tokens=100_000, cached_input_tokens=900_000, output_tokens=0
+    )
+    assert mostly_cached < full
+    assert mostly_cached == round((100_000 * 1.25 + 900_000 * 1.25 * 0.5) / 1_000_000, 6)
+
+
+def test_anthropic_cache_write_premium_and_read_discount():
+    # opus input $15/M; cache read 0.1x, cache write 1.25x.
+    cost = token_cost(
+        "claude", "claude-opus-4-7",
+        fresh_input_tokens=0, cached_input_tokens=1_000_000,
+        cache_write_tokens=1_000_000, output_tokens=0,
+    )
+    assert cost == round((1_000_000 * 15 * 0.1 + 1_000_000 * 15 * 1.25) / 1_000_000, 6)
+
+
+def test_cache_discount_env_overridable():
+    env = {"OPENAI_CACHED_INPUT_DISCOUNT": "0"}  # treat cache hits as free
+    cost = token_cost(
+        "gpt", "gpt-5", fresh_input_tokens=0, cached_input_tokens=1_000_000,
+        output_tokens=0, env=env,
+    )
+    assert cost == 0.0

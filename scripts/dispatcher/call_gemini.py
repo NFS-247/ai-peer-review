@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 
 from .ai_client import AIClient, AIResponse, request_json_with_retry
-from .pricing import cost_for
+from .pricing import token_cost
 
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -64,7 +64,15 @@ class GeminiClient(AIClient):
         usage = payload.get("usageMetadata", {})
         in_tokens = int(usage.get("promptTokenCount", 0))
         out_tokens = int(usage.get("candidatesTokenCount", 0))
-        cost = cost_for("gemini", self._model, in_tokens, out_tokens)
+        # promptTokenCount is the TOTAL; cachedContentTokenCount is the cached
+        # subset, billed cheaper. Discount it so a re-sent prompt isn't full-rated.
+        cached = int(usage.get("cachedContentTokenCount", 0))
+        fresh = max(in_tokens - cached, 0)
+        cost = token_cost(
+            "gemini", self._model,
+            fresh_input_tokens=fresh, cached_input_tokens=cached,
+            output_tokens=out_tokens,
+        )
 
         return AIResponse(
             raw_text=text,

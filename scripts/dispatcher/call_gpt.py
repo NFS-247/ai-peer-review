@@ -16,7 +16,7 @@ import os
 import urllib.request
 
 from .ai_client import AIClient, AIResponse, request_json_with_retry
-from .pricing import cost_for
+from .pricing import token_cost
 
 
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
@@ -58,7 +58,16 @@ class GPTClient(AIClient):
         usage = payload.get("usage", {})
         in_tokens = int(usage.get("prompt_tokens", 0))
         out_tokens = int(usage.get("completion_tokens", 0))
-        cost = cost_for("gpt", self._model, in_tokens, out_tokens)
+        # prompt_tokens is the TOTAL; cached_tokens is the (cheaper) cached subset
+        # of it. OpenAI auto-caches repeated prefixes, so on later review rounds
+        # most of the diff is a cache hit — bill it at the discounted rate.
+        cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0))
+        fresh = max(in_tokens - cached, 0)
+        cost = token_cost(
+            "gpt", self._model,
+            fresh_input_tokens=fresh, cached_input_tokens=cached,
+            output_tokens=out_tokens,
+        )
 
         return AIResponse(
             raw_text=text,
