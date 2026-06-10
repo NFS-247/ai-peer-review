@@ -6,6 +6,34 @@ to run.
 
 ---
 
+## Before you start — what this costs you and requires from you
+
+Know these up front so there are **no surprises** later:
+
+1. **It costs money.** Every review spends real AI tokens — usually pennies per
+   PR, but it adds up across many PRs. You set spend ceilings
+   (`per_pr_cost_ceiling_usd`, `daily_cost_ceiling_usd`); the system stops and
+   asks you before it blows past them. Nothing runs for free.
+2. **You supply and pay for the AI keys** — Anthropic, OpenAI, Gemini — *today*.
+   *(In the future product version, the platform holds the keys and simply bills
+   you for usage; you'd never touch a key. Bringing your own is the stepping
+   stone, not the destination.)*
+3. **You authorize access once.** The system must be granted permission to act
+   on your GitHub, and only a human can grant that — it's a security boundary,
+   not a step that can be automated away. One time.
+4. **The one-time technical setup needs an admin.** Parts A & B below require
+   someone with **GitHub org-admin rights** and basic GitHub comfort — *not* the
+   vision owner. See "Who should do this."
+5. **Your ongoing job is small and human:** bring ideas, and make the final call
+   when the reviewers escalate. **The AIs never merge — you do.** That's the
+   safety rail, on purpose.
+
+Everything *mechanical* (repos, secrets, scaffolding, the code) is automatable
+and goes away over time. The items above — **pay, authorize, decide** — are the
+parts that are genuinely, permanently yours.
+
+---
+
 ## ⚠️ Who should do this (read first)
 
 This is a **one-time technical setup** per project. It is **not** for the
