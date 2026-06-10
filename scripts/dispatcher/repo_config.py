@@ -79,6 +79,15 @@ class RepoConfig:
     backend_reviewers: tuple[str, ...] = ("claude", "gpt")
     high_stakes_reviewers: tuple[str, ...] = ("claude", "gpt", "gemini")
 
+    # Optional per-provider model override. Empty = the client default (which
+    # itself honors the ANTHROPIC_MODEL / OPENAI_MODEL / GEMINI_MODEL env var,
+    # else the built-in default). Lets a tenant pick a cheaper model in its own
+    # committed config; the spend ledger automatically prices whatever model is
+    # chosen. An env var, if set, still wins over the file (operator override).
+    claude_model: str = ""
+    gpt_model: str = ""
+    gemini_model: str = ""
+
     # Budgets and ceilings.
     max_review_rounds: int = 6
     routine_round_budget: int = 3
@@ -121,6 +130,9 @@ class RepoConfig:
             "routine_reviewers": list(self.routine_reviewers),
             "backend_reviewers": list(self.backend_reviewers),
             "high_stakes_reviewers": list(self.high_stakes_reviewers),
+            "claude_model": self.claude_model,
+            "gpt_model": self.gpt_model,
+            "gemini_model": self.gemini_model,
             "max_review_rounds": self.max_review_rounds,
             "routine_round_budget": self.routine_round_budget,
             "backend_round_budget": self.backend_round_budget,
@@ -154,6 +166,9 @@ _STR_FIELDS = {
     "operator_github_login",
     "project_description",
     "billing_mode",
+    "claude_model",
+    "gpt_model",
+    "gemini_model",
 }
 _INT_FIELDS = {
     "max_review_rounds",

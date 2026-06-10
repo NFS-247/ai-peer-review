@@ -141,11 +141,11 @@ def _ci_status_for(api: GitHubAPI, head_sha: str) -> CIStatus:
 def _build_client(reviewer: str, cfg: DispatcherConfig) -> Optional[AIClient]:
     try:
         if reviewer == "claude" and cfg.anthropic_api_key:
-            return ClaudeClient(api_key=cfg.anthropic_api_key)
+            return ClaudeClient(api_key=cfg.anthropic_api_key, model=cfg.claude_model or None)
         if reviewer == "gpt" and cfg.openai_api_key:
-            return GPTClient(api_key=cfg.openai_api_key)
+            return GPTClient(api_key=cfg.openai_api_key, model=cfg.gpt_model or None)
         if reviewer == "gemini" and cfg.gemini_api_key:
-            return GeminiClient(api_key=cfg.gemini_api_key)
+            return GeminiClient(api_key=cfg.gemini_api_key, model=cfg.gemini_model or None)
     except Exception:
         return None
     return None
