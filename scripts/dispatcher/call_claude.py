@@ -16,7 +16,7 @@ import os
 import urllib.request
 
 from .ai_client import AIClient, AIResponse, request_json_with_retry
-from .pricing import cost_for
+from .pricing import token_cost
 
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
@@ -57,9 +57,19 @@ class ClaudeClient(AIClient):
                 text += block.get("text", "")
 
         usage = payload.get("usage", {})
+        # Anthropic's input_tokens EXCLUDES cache reads/writes, which are reported
+        # separately (cache reads ~0.1x, cache writes ~1.25x the input rate).
+        # Accounted for here so the cost is right if prompt caching is ever
+        # enabled; both are 0 today (no cache_control set), so cost is unchanged.
         in_tokens = int(usage.get("input_tokens", 0))
         out_tokens = int(usage.get("output_tokens", 0))
-        cost = cost_for("claude", self._model, in_tokens, out_tokens)
+        cache_read = int(usage.get("cache_read_input_tokens", 0))
+        cache_write = int(usage.get("cache_creation_input_tokens", 0))
+        cost = token_cost(
+            "claude", self._model,
+            fresh_input_tokens=in_tokens, cached_input_tokens=cache_read,
+            cache_write_tokens=cache_write, output_tokens=out_tokens,
+        )
 
         return AIResponse(
             raw_text=text,

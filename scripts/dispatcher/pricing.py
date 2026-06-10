@@ -83,6 +83,15 @@ _DEFAULT_MODEL_KEY = {
     "gemini": "gemini-2.5-pro",
 }
 
+# Discount applied to CACHED (prompt-cache-hit) input tokens relative to the
+# normal input rate, and the premium for cache-WRITE tokens (Anthropic only).
+# Providers auto-cache a repeated prompt prefix and bill the hits much cheaper;
+# on a multi-round PR the same diff is re-sent every round, so counting cached
+# tokens at full rate re-inflates spend. Env-overridable per provider:
+# <PROVIDER>_CACHED_INPUT_DISCOUNT / <PROVIDER>_CACHE_WRITE_MULT.
+_CACHE_READ_DISCOUNT = {"claude": 0.1, "gpt": 0.5, "gemini": 0.25}
+_CACHE_WRITE_MULT = {"claude": 1.25, "gpt": 1.0, "gemini": 1.0}
+
 
 def _table_lookup(table: Mapping[str, tuple[float, float]], model: str) -> Optional[tuple[float, float]]:
     """Exact match, else the longest family-prefix match ("<key>-...")."""
@@ -134,6 +143,49 @@ def resolve_prices(
     return (in_price, out_price)
 
 
+def _cache_read_discount(provider: str, env: Mapping[str, str]) -> float:
+    base = _CACHE_READ_DISCOUNT.get(provider, 0.5)
+    prefix = _ENV_PREFIX.get(provider, provider.upper())
+    return _parse_price(env.get(f"{prefix}_CACHED_INPUT_DISCOUNT"), base)
+
+
+def _cache_write_mult(provider: str, env: Mapping[str, str]) -> float:
+    base = _CACHE_WRITE_MULT.get(provider, 1.0)
+    prefix = _ENV_PREFIX.get(provider, provider.upper())
+    return _parse_price(env.get(f"{prefix}_CACHE_WRITE_MULT"), base)
+
+
+def token_cost(
+    provider: str,
+    model: str,
+    *,
+    fresh_input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    env: Optional[Mapping[str, str]] = None,
+) -> float:
+    """USD cost of one call, accounting for prompt-cache discounts.
+
+    ``fresh_input_tokens`` are billed at the full input rate; ``cached_input_
+    tokens`` (prompt-cache hits) at the discounted rate; ``cache_write_tokens``
+    (Anthropic cache creation) at the write premium; output at the output rate.
+    With no cache fields this is identical to the plain tokens × price formula,
+    so behavior is unchanged when a provider reports no caching.
+    """
+    e = env if env is not None else os.environ
+    in_price, out_price = resolve_prices(provider, model, env=e)
+    read_disc = _cache_read_discount(provider, e)
+    write_mult = _cache_write_mult(provider, e)
+    cost = (
+        fresh_input_tokens * in_price
+        + cached_input_tokens * in_price * read_disc
+        + cache_write_tokens * in_price * write_mult
+        + output_tokens * out_price
+    ) / 1_000_000
+    return round(cost, 6)
+
+
 def cost_for(
     provider: str,
     model: str,
@@ -142,13 +194,18 @@ def cost_for(
     *,
     env: Optional[Mapping[str, str]] = None,
 ) -> float:
-    """USD cost of one call: tokens × the resolved per-model price."""
-    in_price, out_price = resolve_prices(provider, model, env=env)
-    cost = (input_tokens * in_price / 1_000_000) + (output_tokens * out_price / 1_000_000)
-    return round(cost, 6)
+    """USD cost of one call: tokens × the resolved per-model price (no caching)."""
+    return token_cost(
+        provider,
+        model,
+        fresh_input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        env=env,
+    )
 
 
 __all__ = [
     "resolve_prices",
     "cost_for",
+    "token_cost",
 ]

@@ -149,8 +149,15 @@ everywhere and any repo can override it:
   high) inflates the ledger and pauses reviews you'd never actually have paid
   that much for.
 
-You don't have to touch either — the defaults work. They exist so the 24h ledger
-reflects *real* money. Two safety rails ride on top: a **one-time Chat ping at
+**Prompt-cache discounts are applied automatically.** The diff is re-sent every
+review round, so providers serve the repeated prefix from cache and bill it
+cheaply (OpenAI ~50% off, Gemini ~75%, Anthropic cache-reads ~90%). The ledger
+discounts cached tokens to match — a 10-round PR's GPT cost runs ~a third lower
+than full-rating every token. Override the rates per provider with
+`<PROVIDER>_CACHED_INPUT_DISCOUNT` if your contract differs.
+
+You don't have to touch any of these — the defaults work. They exist so the 24h
+ledger reflects *real* money. Two safety rails ride on top: a **one-time Chat ping at
 `daily_cost_warn_fraction`** (default 80%) of the ceiling so you can throttle
 before reviews pause, and a **per-model spend breakdown** on that warning and on
 the ceiling escalation so you can see *which* model is driving the bill.
