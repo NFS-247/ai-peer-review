@@ -22,8 +22,14 @@ On every PR (and on CI completion, and on operator comments), the dispatcher:
    Gemini), each posting a **signed verdict**.
 3. **Converges or escalates.** Agreement converges; disagreement, suspicious
    unanimity on a first high-stakes round, a hard round cap, or a spend
-   ceiling escalates to the operator (GitHub comment + optional email).
-4. **Never merges.** It has no `contents: write`. The human merges.
+   ceiling escalates to the operator (GitHub comment + optional email + phone).
+   Review-outcome escalations are **cooldown-gated**: the phone pings only once
+   the dev agent has gone quiet (no new commit) for `escalation_cooldown_minutes`
+   (default 10) — never mid-iteration. Infra/budget stops ping immediately.
+4. **Pings you when it's ready.** On convergence the dispatcher posts a
+   **"ready to merge" Chat card for every tier** (not just escalations), so a
+   backend PR that quietly goes green still reaches your phone.
+5. **Never merges.** It has no `contents: write`. The human merges.
 
 Safety properties (see `scripts/dispatcher/README.md` and the design doc):
 
@@ -106,8 +112,44 @@ Consuming repos pin a tag (`@v1`). Cutting a new dispatcher version is a
 deliberate tag bump, so a change here can never silently change how an existing
 project's PRs are reviewed.
 
+## Cut 1 — multi-tenancy across NFS-247's repos
+
+Cut 1 makes the dispatcher cleanly multi-tenant for NFS-247's **own** repos
+(opening to outside tenants is Cut 2). What changed:
+
+- **Generic defaults.** The dispatcher no longer hard-codes any one project's
+  rules. Built-in defaults are generic and deny-first; each repo's
+  `.peer-review.json` carries its own `high_stakes_paths`, safety tokens,
+  `head_lock_paths`, reviewer prompt context (`project_description` /
+  `review_guidance`), rosters and ceilings.
+- **Shared org secrets** for the API keys / Chat webhook / approve webapp (the
+  verdict secret stays per-repo — see onboarding above).
+- **Cooldown escalation timing** so the phone never pings mid-iteration, plus a
+  `schedule` sweep that delivers the ping once a PR goes quiet.
+- **Merge-ready Chat ping for all tiers**, and a **rate-limit-resilient** approve
+  button.
+
+### Migrating StockTrader to Cut 1 (do this in order)
+
+1. Commit `templates/peer-review.stocktrader.json` to **StockTrader's repo root**
+   as `.peer-review.json`. It reproduces StockTrader's former hard-coded ruleset
+   byte-for-byte. **Do this before step 2**, or StockTrader's strict rules
+   revert to generic defaults until the file lands.
+2. Re-pin StockTrader's caller workflow to the new dispatcher tag, and add the
+   `on: schedule` trigger (copy from `templates/caller-workflow.yml`) so the
+   cooldown sweep runs.
+3. Move the shared API keys / `GOOGLE_CHAT_WEBHOOK_URL` / `APPROVE_*` to
+   **org-level** secrets; keep `DISPATCHER_VERDICT_SECRET` per-repo.
+
+### Adding the canary (or any new NFS-247 repo)
+
+Copy `templates/caller-workflow.yml` → `.github/workflows/ai-peer-review.yml`
+and (optionally) `templates/peer-review.example.json` → `.peer-review.json`,
+then grant the repo access to the org secrets. No config = generic safe
+defaults.
+
 ## Local development
 
 ```
-python -m pytest tests/ -q     # 150 tests, no dependencies to install
+python -m pytest tests/ -q     # full suite, no dependencies to install
 ```
