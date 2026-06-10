@@ -160,6 +160,41 @@ def build_ready_card(
     }
 
 
+def build_budget_warning_card(
+    *,
+    project_name: str,
+    spent_usd: float,
+    ceiling_usd: float,
+) -> dict:
+    """A one-time 'daily budget almost spent' heads-up.
+
+    Sent the moment 24h spend crosses the warn threshold (default 80%), so the
+    operator can throttle round counts or close PRs BEFORE reviews pause at the
+    ceiling. Informational — no action buttons.
+    """
+    pct = int(round((spent_usd / ceiling_usd) * 100)) if ceiling_usd > 0 else 0
+    body = (
+        f"<b>{_esc(project_name)}</b> has used <b>${spent_usd:.2f}</b> of its "
+        f"${ceiling_usd:.2f} daily AI-review budget (~{pct}%).<br><br>"
+        f"Reviews <b>pause</b> at the ceiling. To avoid hitting it: throttle "
+        f"round counts, close low-priority PRs, or raise the daily ceiling."
+    )
+    return {
+        "cardsV2": [
+            {
+                "cardId": "budget-warning",
+                "card": {
+                    "header": {
+                        "title": f"{project_name}: ~{pct}% of daily AI budget",
+                        "subtitle": f"${spent_usd:.2f} / ${ceiling_usd:.2f}",
+                    },
+                    "sections": [{"widgets": [{"textParagraph": {"text": body}}]}],
+                },
+            }
+        ]
+    }
+
+
 def sign_action(secret: str, *, repo: str, pr_number: int, action: str) -> str:
     """HMAC-SHA256 hex over the canonical ``repo:pr:action`` string.
 
@@ -218,6 +253,7 @@ def send_chat_message(webhook_url: str, payload: dict, *, timeout: int = 20) -> 
 __all__ = [
     "build_escalation_card",
     "build_ready_card",
+    "build_budget_warning_card",
     "build_approve_url",
     "sign_action",
     "send_chat_message",

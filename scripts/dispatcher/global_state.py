@@ -116,6 +116,23 @@ def record_and_get_24h_total(
     return sum_recent(events, now_ts=now)
 
 
+def budget_warning_due(
+    *, total_before: float, total_after: float, ceiling: float, warn_fraction: float
+) -> bool:
+    """True only on the round that pushes 24h spend INTO the warning band.
+
+    Pure. Fires exactly once on the crossing (``before`` below the threshold,
+    ``after`` at/above it but still under the ceiling) — so it needs no
+    persisted "already warned" flag. Returns False when the ceiling or warn
+    fraction is disabled, or once spend is already over the hard ceiling (that
+    case is the pause/escalation path, not a pre-warning).
+    """
+    if ceiling <= 0 or not (0.0 < warn_fraction < 1.0):
+        return False
+    threshold = ceiling * warn_fraction
+    return total_before < threshold <= total_after < ceiling
+
+
 def get_24h_total(api: GitHubAPI, *, now_ts: Optional[float] = None) -> float:
     """Read the current 24h spend total without recording anything."""
     now = now_ts if now_ts is not None else _now_ts()
@@ -134,4 +151,5 @@ __all__ = [
     "prune",
     "record_and_get_24h_total",
     "get_24h_total",
+    "budget_warning_due",
 ]

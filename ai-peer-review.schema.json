@@ -93,7 +93,13 @@
     "daily_cost_ceiling_usd": {
       "type": "number",
       "minimum": 0,
-      "description": "Rolling 24h spend ceiling across the repo."
+      "description": "Rolling 24h spend ceiling across the repo. At the ceiling, reviews pause and the operator is escalated."
+    },
+    "daily_cost_warn_fraction": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Fraction of the daily ceiling at which to send a one-time 'budget almost spent' Chat ping (so the operator can throttle before reviews pause). Default 0.8 (80%). Set 0 to disable the pre-warning. Requires GOOGLE_CHAT_WEBHOOK_URL."
     },
     "escalation_cooldown_minutes": {
       "type": "integer",
