@@ -290,11 +290,13 @@ def _send_escalation(
     ci_status: CIStatus,
     diff_summary: str,
     workflow_run_url: str,
+    spend_breakdown: Optional[dict] = None,
 ) -> None:
     """Send the escalation email, with a guaranteed PR-comment fallback.
 
     Per design Section 6 and 9: email failure must fall back to a PR comment.
-    The dispatcher never silently fails to notify.
+    The dispatcher never silently fails to notify. ``spend_breakdown`` (optional)
+    is the 24h per-model spend, surfaced on the Chat card for budget escalations.
     """
     body_text = build_escalation_email(
         project_name=cfg.project_name,
@@ -339,6 +341,7 @@ def _send_escalation(
                     action="approve_merge",
                     signing_secret=cfg.approve_signing_secret or "",
                 ),
+                spend_breakdown=spend_breakdown,
             )
             send_chat_message(cfg.google_chat_webhook_url, card)
         except Exception as exc:  # noqa: BLE001
@@ -784,9 +787,9 @@ def _run_review_round(
     # one more AI call. Pause all in-flight PRs and escalate, then stop.
     if cfg.daily_cost_ceiling_usd > 0:
         try:
-            daily_already = global_state.get_24h_total(api)
+            daily_already, daily_breakdown = global_state.get_24h_breakdown(api)
         except Exception:  # noqa: BLE001
-            daily_already = 0.0
+            daily_already, daily_breakdown = 0.0, {}
         daily_before = daily_already
         if daily_already >= cfg.daily_cost_ceiling_usd:
             label_state.set_escalated(api, pr_number, api.list_labels(pr_number))
@@ -812,6 +815,7 @@ def _run_review_round(
                 ci_status=_ci_status_for(api, head_sha),
                 diff_summary=f"{len(changed_files)} file(s) changed",
                 workflow_run_url=workflow_run_url,
+                spend_breakdown=daily_breakdown,
             )
             return 0
 
@@ -929,9 +933,19 @@ def _run_review_round(
     if cross.escalated_head_sha and cross.escalated_head_sha != head_sha:
         _supersede_prior_escalation(api, pr_number, cross)
 
+    # Per-reviewer cost for THIS round, attributed so the 24h ledger can show
+    # which model is driving spend (surfaced on the warning/ceiling cards).
+    round_by_provider: dict[str, float] = {}
+    for ev in usage_events:
+        round_by_provider[ev.reviewer] = round(
+            round_by_provider.get(ev.reviewer, 0.0) + ev.cost_usd, 6
+        )
+
     # ---- global 24h spend accounting (cross-PR ceiling)
     try:
-        daily_total = global_state.record_and_get_24h_total(api, round_cost)
+        daily_total = global_state.record_and_get_24h_total(
+            api, round_cost, by_provider=round_by_provider
+        )
     except Exception:  # noqa: BLE001
         # If the ledger is unavailable, fall back to this PR's cumulative cost
         # so the daily trigger still has a non-zero signal rather than 0.
@@ -947,12 +961,17 @@ def _run_review_round(
         warn_fraction=cfg.daily_cost_warn_fraction,
     ):
         try:
+            _, warn_breakdown = global_state.get_24h_breakdown(api)
+        except Exception:  # noqa: BLE001
+            warn_breakdown = round_by_provider
+        try:
             send_chat_message(
                 cfg.google_chat_webhook_url,
                 build_budget_warning_card(
                     project_name=cfg.project_name,
                     spent_usd=daily_total,
                     ceiling_usd=cfg.daily_cost_ceiling_usd,
+                    breakdown=warn_breakdown,
                 ),
             )
         except Exception as exc:  # noqa: BLE001
@@ -1068,9 +1087,15 @@ def _run_review_round(
         label_state.set_escalated(api, pr_number, api.list_labels(pr_number))
         # The 24h global spend trigger is a project-wide safety stop: pause
         # ALL in-flight PRs (not just this one), matching the design's stated
-        # "all in-flight reviews are paused" behavior.
+        # "all in-flight reviews are paused" behavior. Attach the per-model 24h
+        # breakdown so the operator sees what drove the spend.
+        spend_breakdown = None
         if decision.trigger == EscalationTrigger.DAILY_COST_SPIKE:
             _pause_all_in_flight(api, reason="24h dispatcher spend ceiling reached")
+            try:
+                _, spend_breakdown = global_state.get_24h_breakdown(api)
+            except Exception:  # noqa: BLE001
+                spend_breakdown = round_by_provider
         _send_escalation(
             cfg=cfg,
             api=api,
@@ -1086,6 +1111,7 @@ def _run_review_round(
             ci_status=ci_status_now,
             diff_summary=f"{len(changed_files)} file(s) changed",
             workflow_run_url=workflow_run_url,
+            spend_breakdown=spend_breakdown,
         )
 
     return 0

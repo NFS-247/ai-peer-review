@@ -127,6 +127,34 @@ billing, that service should collect usage into an **NFS-controlled datastore**,
 not rely on the per-repo ledger (which is convenient + tamper-evident, but lives
 in the tenant's own repo).
 
+## Controlling AI cost (models, prices, ceilings)
+
+Spend is metered as **tokens × the price of the model actually in use**, summed
+into a rolling 24-hour ledger that drives `daily_cost_ceiling_usd`. Two knobs,
+both set as **org or per-repo Actions variables** (Settings → Secrets and
+variables → Actions → *Variables*) so a value set once at the org applies
+everywhere and any repo can override it:
+
+- **Pick a cheaper model per provider** — `ANTHROPIC_MODEL`, `OPENAI_MODEL`,
+  `GEMINI_MODEL`. Defaults are the strongest/priciest (`claude-opus-4-7`,
+  `gpt-5`, `gemini-2.5-pro`). For most review work a mid-tier model is plenty and
+  far cheaper — e.g. `ANTHROPIC_MODEL=claude-sonnet-4-6` cuts Claude's per-round
+  cost ~5×, `GEMINI_MODEL=gemini-2.5-flash` cuts Gemini's ~4×. The price tracks
+  the model automatically.
+- **Pin exact prices** (optional) — `ANTHROPIC_INPUT_PRICE_PER_M` /
+  `ANTHROPIC_OUTPUT_PRICE_PER_M` and the `OPENAI_…` / `GEMINI_…` equivalents
+  (USD per 1M tokens). The built-in table holds published list rates; set these
+  to **your actual contracted rates** and the ledger becomes exact. This is the
+  fix for a daily ceiling that trips when real spend is low: a wrong price (too
+  high) inflates the ledger and pauses reviews you'd never actually have paid
+  that much for.
+
+You don't have to touch either — the defaults work. They exist so the 24h ledger
+reflects *real* money. Two safety rails ride on top: a **one-time Chat ping at
+`daily_cost_warn_fraction`** (default 80%) of the ceiling so you can throttle
+before reviews pause, and a **per-model spend breakdown** on that warning and on
+the ceiling escalation so you can see *which* model is driving the bill.
+
 ## How the pieces fit (one paragraph)
 
 `NFS-247/ai-peer-review` is the **shared engine**. Every project is its own repo

@@ -9,6 +9,7 @@ from scripts.dispatcher.global_state import (
     budget_warning_due,
     prune,
     sum_recent,
+    sum_recent_by_provider,
 )
 
 
@@ -86,3 +87,38 @@ def test_prune_keeps_all_in_window():
 
 def test_empty_events_sum_zero():
     assert sum_recent([], now_ts=NOW) == 0.0
+
+
+def test_sum_recent_by_provider_aggregates_in_window():
+    events = [
+        {"ts": NOW - 10, "cost": 0.5, "by": {"claude": 0.4, "gpt": 0.1}},
+        {"ts": NOW - 20, "cost": 0.3, "by": {"claude": 0.2, "gemini": 0.1}},
+    ]
+    got = sum_recent_by_provider(events, now_ts=NOW)
+    assert got == {"claude": 0.6, "gpt": 0.1, "gemini": 0.1}
+
+
+def test_sum_recent_by_provider_excludes_old_and_handles_missing_by():
+    events = [
+        {"ts": NOW - 10, "cost": 0.5, "by": {"claude": 0.5}},
+        {"ts": NOW - WINDOW_SECONDS - 1, "cost": 9.0, "by": {"gpt": 9.0}},  # too old
+        {"ts": NOW - 5, "cost": 0.2},  # legacy event, no breakdown -> ignored here
+    ]
+    assert sum_recent_by_provider(events, now_ts=NOW) == {"claude": 0.5}
+
+
+def test_prune_preserves_by_breakdown():
+    events = [
+        {"ts": NOW - 1, "cost": 0.3, "by": {"claude": 0.2, "gpt": 0.1}},
+        {"ts": NOW - WINDOW_SECONDS - 5, "cost": 9.0, "by": {"gpt": 9.0}},  # dropped
+    ]
+    pruned = prune(events, now_ts=NOW)
+    assert len(pruned) == 1
+    assert pruned[0]["by"] == {"claude": 0.2, "gpt": 0.1}
+
+
+def test_by_total_consistency_with_cost():
+    # The per-provider amounts should reconcile with the round cost total.
+    events = [{"ts": NOW - 1, "cost": 0.3, "by": {"claude": 0.2, "gpt": 0.1}}]
+    by = sum_recent_by_provider(events, now_ts=NOW)
+    assert round(sum(by.values()), 6) == sum_recent(events, now_ts=NOW)

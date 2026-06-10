@@ -26,6 +26,19 @@ def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def format_spend_breakdown(breakdown: Mapping[str, float] | None) -> str:
+    """Render a per-provider spend map as 'claude $0.41 · gpt $0.06', cost-desc.
+
+    Returns "" for an empty/None map so callers can omit the line entirely.
+    Reviewer names are provider identifiers (claude/gpt/gemini), already safe,
+    but escaped defensively in case the map is ever extended.
+    """
+    if not breakdown:
+        return ""
+    items = sorted(breakdown.items(), key=lambda kv: kv[1], reverse=True)
+    return " · ".join(f"{_esc(str(name))} ${amount:.2f}" for name, amount in items)
+
+
 def build_escalation_card(
     *,
     project_name: str,
@@ -37,6 +50,7 @@ def build_escalation_card(
     reviewer_summaries: Mapping[str, str],
     approve_url: str = "",
     approve_merge_url: str = "",
+    spend_breakdown: Mapping[str, float] | None = None,
 ) -> dict:
     """Build a Google Chat cardsV2 payload for an escalation.
 
@@ -44,7 +58,9 @@ def build_escalation_card(
     (the operator's one-tap web app — see chat-approve/Code.gs) it also carries
     a "✅ Approve" button (posts OPERATOR APPROVE); when ``approve_merge_url`` is
     set it adds a "🚀 Approve & Merge" button (approve, then merge). Both are
-    single-tap, no typing.
+    single-tap, no typing. ``spend_breakdown`` (optional), when given, adds a
+    "24h spend" line showing per-model cost so a budget-driven escalation says
+    exactly where the money went.
     """
     reviewer_lines = "  •  ".join(
         f"{name}: {summary}" for name, summary in reviewer_summaries.items()
@@ -62,10 +78,14 @@ def build_escalation_card(
             "<b>OPERATOR INVESTIGATE &lt;note&gt;</b>"
         )
 
+    spend_line = format_spend_breakdown(spend_breakdown)
+    spend_html = f"<b>24h spend:</b> {spend_line}<br>" if spend_line else ""
+
     body = (
         f"<b>{_esc(pr_title)}</b><br>"
         f"<b>Why:</b> {_esc(reason_short)}<br>"
-        f"<b>Reviewers:</b> {_esc(reviewer_lines)}<br><br>"
+        f"<b>Reviewers:</b> {_esc(reviewer_lines)}<br>"
+        f"{spend_html}<br>"
         f"{instructions}"
     )
 
@@ -165,17 +185,22 @@ def build_budget_warning_card(
     project_name: str,
     spent_usd: float,
     ceiling_usd: float,
+    breakdown: Mapping[str, float] | None = None,
 ) -> dict:
     """A one-time 'daily budget almost spent' heads-up.
 
     Sent the moment 24h spend crosses the warn threshold (default 80%), so the
     operator can throttle round counts or close PRs BEFORE reviews pause at the
-    ceiling. Informational — no action buttons.
+    ceiling. Informational — no action buttons. ``breakdown`` (optional) adds a
+    per-model "where it's going" line so the operator sees the dominant cost.
     """
     pct = int(round((spent_usd / ceiling_usd) * 100)) if ceiling_usd > 0 else 0
+    spend_line = format_spend_breakdown(breakdown)
+    spend_html = f"<b>Where it's going:</b> {spend_line}<br><br>" if spend_line else ""
     body = (
         f"<b>{_esc(project_name)}</b> has used <b>${spent_usd:.2f}</b> of its "
         f"${ceiling_usd:.2f} daily AI-review budget (~{pct}%).<br><br>"
+        f"{spend_html}"
         f"Reviews <b>pause</b> at the ceiling. To avoid hitting it: throttle "
         f"round counts, close low-priority PRs, or raise the daily ceiling."
     )
@@ -254,6 +279,7 @@ __all__ = [
     "build_escalation_card",
     "build_ready_card",
     "build_budget_warning_card",
+    "format_spend_breakdown",
     "build_approve_url",
     "sign_action",
     "send_chat_message",

@@ -36,7 +36,6 @@
     "backend/app/main.py",
     "backend/app/config*.py",
     ".github/workflows/**",
-    "scripts/dispatcher/**",
     "docs/tradewatcher_operating_contract_*.md",
     "pyproject.toml",
     "requirements*.txt",
