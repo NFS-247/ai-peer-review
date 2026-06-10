@@ -35,8 +35,12 @@ class GeminiClient(AIClient):
         self._model = model or (os.environ.get(MODEL_ENV) or "").strip() or DEFAULT_MODEL
 
     def review(self, prompt: str) -> AIResponse:
+        # Quote the model: it is operator-configurable (config/env), and it sits
+        # in the URL path, so encode it to prevent query/path injection. The
+        # default safe="/" preserves legitimate path slashes (e.g. tunedModels/…)
+        # while encoding ? & = : and spaces.
         url = (
-            f"{GEMINI_API_BASE}/{self._model}:generateContent"
+            f"{GEMINI_API_BASE}/{urllib.parse.quote(self._model)}:generateContent"
             f"?key={urllib.parse.quote(self._api_key)}"
         )
         body = {
