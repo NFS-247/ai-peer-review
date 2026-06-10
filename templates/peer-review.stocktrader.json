@@ -96,6 +96,8 @@
   "backend_reviewers": ["claude", "gpt"],
   "high_stakes_reviewers": ["claude", "gpt", "gemini"],
 
+  "gemini_model": "gemini-2.5-flash",
+
   "max_review_rounds": 6,
   "routine_round_budget": 3,
   "backend_round_budget": 3,

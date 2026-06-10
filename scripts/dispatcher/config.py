@@ -50,6 +50,12 @@ class DispatcherConfig:
     daily_cost_ceiling_usd: float = 20.0
     daily_cost_warn_fraction: float = 0.8
     escalation_cooldown_minutes: int = 10
+    # Per-provider model selection (empty = client default). Resolved from
+    # env > repo config > "" so a cheaper model can be pinned per repo while an
+    # operator env var still overrides. The spend ledger prices the chosen model.
+    claude_model: str = ""
+    gpt_model: str = ""
+    gemini_model: str = ""
     # Billing (see usage.py): how this tenant is charged for AI usage.
     billing_mode: str = "byok"
     usage_markup_multiplier: float = 1.0
@@ -164,6 +170,10 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         else rc.usage_markup_multiplier
     )
     dev_fee = float(e["DEV_FEE_USD"]) if e.get("DEV_FEE_USD") else rc.dev_fee_usd
+    # Model selection: env var (operator override) > repo config file > default.
+    claude_model = (e.get("ANTHROPIC_MODEL") or rc.claude_model or "").strip()
+    gpt_model = (e.get("OPENAI_MODEL") or rc.gpt_model or "").strip()
+    gemini_model = (e.get("GEMINI_MODEL") or rc.gemini_model or "").strip()
 
     return DispatcherConfig(
         project_name=project_name,
@@ -189,6 +199,9 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         billing_mode=billing_mode,
         usage_markup_multiplier=usage_markup,
         dev_fee_usd=dev_fee,
+        claude_model=claude_model,
+        gpt_model=gpt_model,
+        gemini_model=gemini_model,
         repo_config=rc,
     )
 

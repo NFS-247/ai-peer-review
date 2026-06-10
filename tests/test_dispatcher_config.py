@@ -141,6 +141,53 @@ def test_cooldown_env_override_zero_disables():
     assert cfg.escalation_cooldown_minutes == 0
 
 
+def test_model_selection_defaults_empty():
+    cfg = load_from_env({"GITHUB_TOKEN": "t"})
+    assert cfg.claude_model == ""
+    assert cfg.gpt_model == ""
+    assert cfg.gemini_model == ""
+
+
+def test_model_selection_from_config_file(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text(_json.dumps({
+        "claude_model": "claude-sonnet-4-6",
+        "gemini_model": "gemini-2.5-flash",
+    }), encoding="utf-8")
+    cfg = load_from_env({"GITHUB_TOKEN": "t", REPO_CONFIG_PATH_ENV: str(p)})
+    assert cfg.claude_model == "claude-sonnet-4-6"
+    assert cfg.gemini_model == "gemini-2.5-flash"
+    assert cfg.gpt_model == ""  # unset -> client default
+
+
+def test_model_env_var_overrides_config_file(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text(_json.dumps({"gemini_model": "gemini-2.5-flash"}), encoding="utf-8")
+    cfg = load_from_env({
+        "GITHUB_TOKEN": "t",
+        REPO_CONFIG_PATH_ENV: str(p),
+        "GEMINI_MODEL": "gemini-2.5-pro",  # operator override wins
+    })
+    assert cfg.gemini_model == "gemini-2.5-pro"
+
+
+def test_build_client_applies_configured_model(tmp_path):
+    # End-to-end: a model pinned in config reaches the actual client instance,
+    # so the real API call (and its pricing) uses the cheaper model.
+    from scripts.dispatcher.main import _build_client
+
+    p = tmp_path / "c.json"
+    p.write_text(_json.dumps({"gemini_model": "gemini-2.5-flash"}), encoding="utf-8")
+    cfg = load_from_env({
+        "GITHUB_TOKEN": "t",
+        "GEMINI_API_KEY": "g",
+        REPO_CONFIG_PATH_ENV: str(p),
+    })
+    client = _build_client("gemini", cfg)
+    assert client is not None
+    assert client._model == "gemini-2.5-flash"
+
+
 def test_tiers_from_repo_config_maps_rosters():
     rc = RepoConfig(
         routine_reviewers=("claude",),

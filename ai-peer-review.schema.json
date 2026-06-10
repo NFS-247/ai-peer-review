@@ -77,6 +77,18 @@
       "items": { "type": "string", "enum": ["claude", "gpt", "gemini"] },
       "description": "Reviewer roster for the high_stakes tier."
     },
+    "claude_model": {
+      "type": "string",
+      "description": "Model id for the Claude reviewer (e.g. 'claude-sonnet-4-6' to cut cost ~5x vs the default opus). Empty = built-in default. Spend is priced for whichever model is set. An ANTHROPIC_MODEL env var overrides this."
+    },
+    "gpt_model": {
+      "type": "string",
+      "description": "Model id for the GPT reviewer (e.g. 'gpt-5-mini'). Empty = built-in default. Spend is priced for the chosen model. An OPENAI_MODEL env var overrides this."
+    },
+    "gemini_model": {
+      "type": "string",
+      "description": "Model id for the Gemini reviewer (e.g. 'gemini-2.5-flash' to cut cost ~4x vs the default pro). Empty = built-in default. Spend is priced for the chosen model. A GEMINI_MODEL env var overrides this."
+    },
     "max_review_rounds": {
       "type": "integer",
       "minimum": 1,
