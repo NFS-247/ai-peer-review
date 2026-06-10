@@ -9,10 +9,9 @@ tune via env if pricing changes).
 from __future__ import annotations
 
 import json
-import urllib.error
 import urllib.request
 
-from .ai_client import AIClient, AIResponse
+from .ai_client import AIClient, AIResponse, request_json_with_retry
 
 
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
@@ -46,14 +45,7 @@ class GPTClient(AIClient):
                 "Authorization": f"Bearer {self._api_key}",
             },
         )
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-            raise RuntimeError(
-                f"OpenAI API HTTP {exc.code}: {detail[:500]}"
-            ) from exc
+        payload = request_json_with_retry(req, provider="OpenAI")
 
         text = ""
         choices = payload.get("choices", [])

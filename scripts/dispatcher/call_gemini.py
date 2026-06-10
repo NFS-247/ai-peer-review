@@ -9,11 +9,10 @@ tune via env if pricing changes).
 from __future__ import annotations
 
 import json
-import urllib.error
 import urllib.parse
 import urllib.request
 
-from .ai_client import AIClient, AIResponse
+from .ai_client import AIClient, AIResponse, request_json_with_retry
 
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -49,14 +48,7 @@ class GeminiClient(AIClient):
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-            raise RuntimeError(
-                f"Gemini API HTTP {exc.code}: {detail[:500]}"
-            ) from exc
+        payload = request_json_with_retry(req, provider="Gemini")
 
         text = ""
         candidates = payload.get("candidates", [])

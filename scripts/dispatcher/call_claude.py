@@ -8,10 +8,9 @@ Pricing as of 2026: claude-opus-4-7 input ~$15/1M, output ~$75/1M.
 from __future__ import annotations
 
 import json
-import urllib.error
 import urllib.request
 
-from .ai_client import AIClient, AIResponse
+from .ai_client import AIClient, AIResponse, request_json_with_retry
 
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
@@ -46,14 +45,7 @@ class ClaudeClient(AIClient):
                 "anthropic-version": "2023-06-01",
             },
         )
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-            raise RuntimeError(
-                f"Anthropic API HTTP {exc.code}: {detail[:500]}"
-            ) from exc
+        payload = request_json_with_retry(req, provider="Anthropic")
 
         text = ""
         for block in payload.get("content", []):
