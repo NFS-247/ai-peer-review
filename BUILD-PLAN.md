@@ -92,7 +92,7 @@ brains review it → the human approves/merges. No UI, no auto-repo-creation yet
 |---|-----------|----------------|
 | **1** | **Build brain** (above) | Idea → reviewed PR, end-to-end, no UI |
 | 2 | **Self-provisioning** | New project wires itself; no human repo setup |
-| 3 | **Front-door UI** | "Talk to one place" — intake + status + approvals |
+| 3 | **Front-door UI** (spec'd in `UI-PLAN.md`) | "Talk to one place" — intake + status + approvals |
 | 4 | **Billing readout** | Per-tenant invoices off the usage ledger |
 
 Cut 1 is milestone 1. Each later milestone is independently valuable and shippable.
