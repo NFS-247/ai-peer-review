@@ -342,11 +342,14 @@ def test_ready_for_merge_does_not_double_ping(monkeypatch):
 
 def test_immediate_cost_spike_still_pings(monkeypatch):
     # Infra/budget escalations are NOT cooldown-gated: they ping immediately.
-    api = FakeAPI(files=["README.md"])  # routine, reviewer approves
+    # Use a still-iterating (dissenting) PR so the per-PR cost ceiling actually
+    # fires — a CONVERGED PR over budget is intentionally NOT escalated (it is
+    # ready for merge; see escalation.test_converged_pr_over_budget_is_ready).
+    api = FakeAPI(files=["README.md"])  # routine
     cfg = _cfg(cooldown=10, per_pr_ceiling=0.005)  # one round busts the ceiling
     holder = {"t": 1000.0}
     _clock(monkeypatch, holder)
-    monkeypatch.setattr(M, "_build_client", lambda r, c: ApproveClient(r))
+    monkeypatch.setattr(M, "_build_client", lambda r, c: DissentClient(r))
 
     M._run_review_round(cfg=cfg, api=api, pr_number=101)
 

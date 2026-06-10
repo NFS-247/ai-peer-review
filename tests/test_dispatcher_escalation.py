@@ -47,13 +47,15 @@ def test_no_escalation_when_converged_routine():
     assert d.trigger == EscalationTrigger.NONE
 
 
-def test_cost_spike_triggers_first():
+def test_cost_spike_when_not_converged():
+    # Over the per-PR ceiling AND still iterating (dissent) -> escalate to stop
+    # burning more money. Cost takes priority over the dissent reason.
     d = decide_escalation(
         tier="routine",
         round_=1,
         round_budget=3,
         max_review_rounds=6,
-        convergence=_converged_state(),
+        convergence=_dissenting_state(),
         changed_files=["README.md"],
         per_pr_cost_usd=10.0,
         per_pr_cost_ceiling_usd=5.0,
@@ -61,6 +63,45 @@ def test_cost_spike_triggers_first():
         ci_failure_count_after_fix_attempts=0,
     )
     assert d.trigger == EscalationTrigger.COST_SPIKE
+
+
+def test_converged_pr_over_budget_is_ready_not_escalated():
+    # The reported wart: a PR that converged but whose total crossed the per-PR
+    # ceiling must read as ready-for-merge, not a redundant cost escalation —
+    # the spend is already incurred and no further reviews will run.
+    d = decide_escalation(
+        tier="high_stakes",
+        round_=10,
+        round_budget=2,
+        max_review_rounds=10,
+        convergence=_converged_state(required=("claude", "gpt", "gemini")),
+        changed_files=["README.md"],
+        per_pr_cost_usd=5.80,
+        per_pr_cost_ceiling_usd=5.0,
+        api_outage_minutes=0,
+        ci_failure_count_after_fix_attempts=0,
+    )
+    assert d.trigger == EscalationTrigger.NONE
+
+
+def test_converged_over_budget_head_lock_still_routes_to_operator_signoff():
+    # Suppressing the cost escalation must NOT let a head-lock PR slip through:
+    # a converged PR touching an operator-gated path still escalates for
+    # sign-off (with the correct reason, not a "cost" reason).
+    d = decide_escalation(
+        tier="high_stakes",
+        round_=10,
+        round_budget=2,
+        max_review_rounds=10,
+        convergence=_converged_state(required=("claude", "gpt", "gemini")),
+        changed_files=["backend/app/broker.py"],
+        per_pr_cost_usd=5.80,
+        per_pr_cost_ceiling_usd=5.0,
+        api_outage_minutes=0,
+        ci_failure_count_after_fix_attempts=0,
+        head_lock_paths=("backend/app/broker*.py",),
+    )
+    assert d.trigger == EscalationTrigger.HIGH_STAKES_AUTO
 
 
 def test_api_outage_triggers():
