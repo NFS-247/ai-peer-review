@@ -48,6 +48,7 @@ class DispatcherConfig:
     max_review_rounds: int = 6
     per_pr_cost_ceiling_usd: float = 5.0
     daily_cost_ceiling_usd: float = 20.0
+    daily_cost_warn_fraction: float = 0.8
     escalation_cooldown_minutes: int = 10
     # Billing (see usage.py): how this tenant is charged for AI usage.
     billing_mode: str = "byok"
@@ -146,6 +147,11 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         if e.get("DAILY_COST_CEILING_USD")
         else rc.daily_cost_ceiling_usd
     )
+    daily_warn_fraction = (
+        float(e["DAILY_COST_WARN_FRACTION"])
+        if e.get("DAILY_COST_WARN_FRACTION")
+        else rc.daily_cost_warn_fraction
+    )
     cooldown = (
         int(e["ESCALATION_COOLDOWN_MINUTES"])
         if e.get("ESCALATION_COOLDOWN_MINUTES")
@@ -178,6 +184,7 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         max_review_rounds=max_rounds,
         per_pr_cost_ceiling_usd=per_pr_ceiling,
         daily_cost_ceiling_usd=daily_ceiling,
+        daily_cost_warn_fraction=daily_warn_fraction,
         escalation_cooldown_minutes=cooldown,
         billing_mode=billing_mode,
         usage_markup_multiplier=usage_markup,

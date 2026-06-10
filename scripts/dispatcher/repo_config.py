@@ -86,6 +86,10 @@ class RepoConfig:
     high_stakes_round_budget: int = 2
     per_pr_cost_ceiling_usd: float = 5.0
     daily_cost_ceiling_usd: float = 20.0
+    # Fraction of the daily ceiling at which to send a one-time "budget almost
+    # spent" warning ping, so the operator can throttle before reviews pause.
+    # 0 disables the pre-warning. Default 0.8 (80%).
+    daily_cost_warn_fraction: float = 0.8
 
     # Minutes the dev agent must be quiet (no new commit) before a review-
     # outcome escalation pings the operator. 0 disables the cooldown (ping
@@ -123,6 +127,7 @@ class RepoConfig:
             "high_stakes_round_budget": self.high_stakes_round_budget,
             "per_pr_cost_ceiling_usd": self.per_pr_cost_ceiling_usd,
             "daily_cost_ceiling_usd": self.daily_cost_ceiling_usd,
+            "daily_cost_warn_fraction": self.daily_cost_warn_fraction,
             "escalation_cooldown_minutes": self.escalation_cooldown_minutes,
             "billing_mode": self.billing_mode,
             "usage_markup_multiplier": self.usage_markup_multiplier,
@@ -160,6 +165,7 @@ _INT_FIELDS = {
 _FLOAT_FIELDS = {
     "per_pr_cost_ceiling_usd",
     "daily_cost_ceiling_usd",
+    "daily_cost_warn_fraction",
     "usage_markup_multiplier",
     "dev_fee_usd",
 }

@@ -167,6 +167,46 @@ def test_card_escapes_html_in_title():
     assert "<script>" not in text
 
 
+def test_format_spend_breakdown_sorted_desc():
+    s = gc.format_spend_breakdown({"gpt": 0.06, "claude": 0.41, "gemini": 0.10})
+    assert s == "claude $0.41 · gemini $0.10 · gpt $0.06"
+
+
+def test_format_spend_breakdown_empty_is_blank():
+    assert gc.format_spend_breakdown(None) == ""
+    assert gc.format_spend_breakdown({}) == ""
+
+
+def test_escalation_card_shows_spend_breakdown_when_given():
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=5, pr_url="http://x/5", pr_title="t",
+        tier="high_stakes", reason_short="24-hour dispatcher spend ceiling reached",
+        reviewer_summaries={}, spend_breakdown={"claude": 0.41, "gpt": 0.06},
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "24h spend:" in text
+    assert "claude $0.41" in text and "gpt $0.06" in text
+
+
+def test_escalation_card_omits_spend_line_without_breakdown():
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=5, pr_url="http://x/5", pr_title="t",
+        tier="backend", reason_short="r", reviewer_summaries={},
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "24h spend:" not in text
+
+
+def test_budget_warning_card_shows_breakdown():
+    card = gc.build_budget_warning_card(
+        project_name="P", spent_usd=16.5, ceiling_usd=20.0,
+        breakdown={"gemini": 9.0, "claude": 5.0, "gpt": 2.5},
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "Where it's going:" in text
+    assert "gemini $9.00" in text  # the dominant model is named first
+
+
 def test_send_requires_url():
     with pytest.raises(ValueError):
         gc.send_chat_message("", {"text": "hi"})

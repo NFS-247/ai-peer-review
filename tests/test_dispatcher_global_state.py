@@ -6,9 +6,31 @@ window, not per-PR. The window math is pure and tested without GitHub.
 
 from scripts.dispatcher.global_state import (
     WINDOW_SECONDS,
+    budget_warning_due,
     prune,
     sum_recent,
+    sum_recent_by_provider,
 )
+
+
+def test_budget_warning_fires_on_the_crossing_round():
+    # 80% of 20 = 16; this round took spend from 15 -> 17, crossing it.
+    assert budget_warning_due(total_before=15.0, total_after=17.0, ceiling=20.0, warn_fraction=0.8) is True
+
+
+def test_budget_warning_silent_once_already_in_band():
+    # Already past 80% before this round -> no repeat ping.
+    assert budget_warning_due(total_before=17.0, total_after=18.0, ceiling=20.0, warn_fraction=0.8) is False
+
+
+def test_budget_warning_silent_when_over_ceiling():
+    # At/over the hard ceiling is the pause/escalation path, not a pre-warning.
+    assert budget_warning_due(total_before=18.0, total_after=21.0, ceiling=20.0, warn_fraction=0.8) is False
+
+
+def test_budget_warning_disabled_by_zero_fraction_or_ceiling():
+    assert budget_warning_due(total_before=0.0, total_after=19.0, ceiling=20.0, warn_fraction=0.0) is False
+    assert budget_warning_due(total_before=0.0, total_after=19.0, ceiling=0.0, warn_fraction=0.8) is False
 
 
 NOW = 1_000_000.0
@@ -65,3 +87,38 @@ def test_prune_keeps_all_in_window():
 
 def test_empty_events_sum_zero():
     assert sum_recent([], now_ts=NOW) == 0.0
+
+
+def test_sum_recent_by_provider_aggregates_in_window():
+    events = [
+        {"ts": NOW - 10, "cost": 0.5, "by": {"claude": 0.4, "gpt": 0.1}},
+        {"ts": NOW - 20, "cost": 0.3, "by": {"claude": 0.2, "gemini": 0.1}},
+    ]
+    got = sum_recent_by_provider(events, now_ts=NOW)
+    assert got == {"claude": 0.6, "gpt": 0.1, "gemini": 0.1}
+
+
+def test_sum_recent_by_provider_excludes_old_and_handles_missing_by():
+    events = [
+        {"ts": NOW - 10, "cost": 0.5, "by": {"claude": 0.5}},
+        {"ts": NOW - WINDOW_SECONDS - 1, "cost": 9.0, "by": {"gpt": 9.0}},  # too old
+        {"ts": NOW - 5, "cost": 0.2},  # legacy event, no breakdown -> ignored here
+    ]
+    assert sum_recent_by_provider(events, now_ts=NOW) == {"claude": 0.5}
+
+
+def test_prune_preserves_by_breakdown():
+    events = [
+        {"ts": NOW - 1, "cost": 0.3, "by": {"claude": 0.2, "gpt": 0.1}},
+        {"ts": NOW - WINDOW_SECONDS - 5, "cost": 9.0, "by": {"gpt": 9.0}},  # dropped
+    ]
+    pruned = prune(events, now_ts=NOW)
+    assert len(pruned) == 1
+    assert pruned[0]["by"] == {"claude": 0.2, "gpt": 0.1}
+
+
+def test_by_total_consistency_with_cost():
+    # The per-provider amounts should reconcile with the round cost total.
+    events = [{"ts": NOW - 1, "cost": 0.3, "by": {"claude": 0.2, "gpt": 0.1}}]
+    by = sum_recent_by_provider(events, now_ts=NOW)
+    assert round(sum(by.values()), 6) == sum_recent(events, now_ts=NOW)
