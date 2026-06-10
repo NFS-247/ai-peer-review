@@ -118,14 +118,48 @@ class CrossRunState:
     cumulative_cost_usd: float = 0.0
     ci_fix_attempts: int = 0
     consecutive_api_failures: int = 0
+    # Deferred (cooldown-gated) escalation: when reviewers request changes (or
+    # CI persistently fails), the ping is held until the dev agent goes quiet
+    # for the cooldown window. These track the pending stall; pending_since == 0
+    # means none pending. ``escalated_head_sha`` records the head a cooldown
+    # escalation last fired at, so a new commit can supersede it.
+    pending_escalation_since: float = 0.0
+    pending_escalation_head_sha: str = ""
+    pending_escalation_trigger: str = ""
+    pending_escalation_reason_short: str = ""
+    pending_escalation_detail: str = ""
+    escalated_head_sha: str = ""
     state_comment_id: Optional[int] = None  # not serialized into the block
 
+    def has_pending_escalation(self) -> bool:
+        return bool(self.pending_escalation_since)
+
+    def clear_pending_escalation(self) -> None:
+        self.pending_escalation_since = 0.0
+        self.pending_escalation_head_sha = ""
+        self.pending_escalation_trigger = ""
+        self.pending_escalation_reason_short = ""
+        self.pending_escalation_detail = ""
+
     def _payload(self) -> dict:
-        return {
+        payload = {
             "cumulative_cost_usd": round(self.cumulative_cost_usd, 6),
             "ci_fix_attempts": self.ci_fix_attempts,
             "consecutive_api_failures": self.consecutive_api_failures,
         }
+        # Cut-1 fields are added ONLY when non-default, so a state with no
+        # pending escalation serializes (and signs) byte-for-byte like the
+        # pre-Cut-1 format — existing signed state comments still verify after
+        # the tag bump.
+        if self.pending_escalation_since:
+            payload["pending_escalation_since"] = round(self.pending_escalation_since, 3)
+            payload["pending_escalation_head_sha"] = self.pending_escalation_head_sha
+            payload["pending_escalation_trigger"] = self.pending_escalation_trigger
+            payload["pending_escalation_reason_short"] = self.pending_escalation_reason_short
+            payload["pending_escalation_detail"] = self.pending_escalation_detail
+        if self.escalated_head_sha:
+            payload["escalated_head_sha"] = self.escalated_head_sha
+        return payload
 
     def signing_string(self) -> str:
         return json.dumps(self._payload(), sort_keys=True, separators=(",", ":"))
@@ -178,6 +212,12 @@ def read_cross_run_state(
             cumulative_cost_usd=float(data.get("cumulative_cost_usd", 0.0)),
             ci_fix_attempts=int(data.get("ci_fix_attempts", 0)),
             consecutive_api_failures=int(data.get("consecutive_api_failures", 0)),
+            pending_escalation_since=float(data.get("pending_escalation_since", 0.0)),
+            pending_escalation_head_sha=str(data.get("pending_escalation_head_sha", "")),
+            pending_escalation_trigger=str(data.get("pending_escalation_trigger", "")),
+            pending_escalation_reason_short=str(data.get("pending_escalation_reason_short", "")),
+            pending_escalation_detail=str(data.get("pending_escalation_detail", "")),
+            escalated_head_sha=str(data.get("escalated_head_sha", "")),
             state_comment_id=c.id,
         )
         provided_sig = data.get("signature")

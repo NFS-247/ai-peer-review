@@ -71,18 +71,24 @@ def test_operator_email_stripped():
 # ---- Phase 3 A3: project metadata + rosters from repo config file ----------
 
 import json as _json
-from scripts.dispatcher.config import tiers_from_repo_config, REPO_CONFIG_PATH_ENV
+from scripts.dispatcher.config import (
+    tiers_from_repo_config,
+    REPO_CONFIG_PATH_ENV,
+    REPO_CONFIG_LEGACY_PATH_ENV,
+)
 from scripts.dispatcher.repo_config import RepoConfig
 
 
-def test_no_config_file_uses_tradewatcher_defaults():
-    cfg = load_from_env({"GITHUB_TOKEN": "t"})
-    assert cfg.project_name == "TradeWatcher"
+def test_no_config_file_uses_generic_defaults():
+    cfg = load_from_env({"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "NFS-247/Canary"})
+    # project_name falls back to the repo name when no config supplies one.
+    assert cfg.project_name == "Canary"
     assert cfg.operator_github_login == "NERT24"
     assert cfg.tiers["high_stakes"].reviewers == ("claude", "gpt", "gemini")
     assert cfg.tiers["backend"].reviewers == ("claude", "gpt")
     assert cfg.per_pr_cost_ceiling_usd == 5.0
     assert cfg.daily_cost_ceiling_usd == 20.0
+    assert cfg.escalation_cooldown_minutes == 10
 
 
 def test_config_file_supplies_project_metadata(tmp_path):
@@ -115,6 +121,24 @@ def test_env_var_overrides_config_file(tmp_path):
     })
     # env wins over file
     assert cfg.project_name == "FromEnv"
+
+
+def test_legacy_config_path_used_when_primary_absent(tmp_path):
+    # A repo still carrying .github/ai-peer-review.json keeps working: when the
+    # primary .peer-review.json is absent, the legacy path is loaded.
+    legacy = tmp_path / "ai-peer-review.json"
+    legacy.write_text(_json.dumps({"project_name": "LegacyProj"}), encoding="utf-8")
+    cfg = load_from_env({
+        "GITHUB_TOKEN": "t",
+        REPO_CONFIG_PATH_ENV: str(tmp_path / "nope.json"),  # primary absent
+        REPO_CONFIG_LEGACY_PATH_ENV: str(legacy),
+    })
+    assert cfg.project_name == "LegacyProj"
+
+
+def test_cooldown_env_override_zero_disables():
+    cfg = load_from_env({"GITHUB_TOKEN": "t", "ESCALATION_COOLDOWN_MINUTES": "0"})
+    assert cfg.escalation_cooldown_minutes == 0
 
 
 def test_tiers_from_repo_config_maps_rosters():

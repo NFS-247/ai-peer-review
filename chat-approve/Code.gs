@@ -59,21 +59,38 @@ function doGet(e) {
   var prUrl = 'https://github.com/' + owner + '/' + repo + '/pull/' + pr;
 
   // 1. Post OPERATOR APPROVE (the dispatcher records it and adds its review).
-  var c = gh('post', '/repos/' + owner + '/' + repo + '/issues/' + pr + '/comments',
-             ghToken, { body: command });
+  //    ghRetry transparently retries once on a GitHub rate limit.
+  var c = ghRetry('post', '/repos/' + owner + '/' + repo + '/issues/' + pr + '/comments',
+                  ghToken, { body: command });
   if (c.code < 200 || c.code >= 300) {
-    return page('⚠ GitHub error ' + c.code,
-      'Could not post approval. <a href="' + prUrl + '">Open PR #' + escapeHtml(pr) +
-      '</a> and approve manually.<br><br><pre>' + escapeHtml(c.text.slice(0, 500)) + '</pre>');
+    if (isRateLimited(c)) {
+      // Still limited after one retry: degrade to a manual link, NOT an error
+      // page. Nothing was lost — the operator just approves with one more tap.
+      return page('⏳ GitHub is busy — tap to approve',
+        'GitHub is rate-limiting right now, so your approval could not be posted ' +
+        'automatically (we already retried). Nothing was lost — tap below to open ' +
+        'the PR and approve manually.<br><br>' +
+        '<a href="' + prUrl + '">Open PR #' + escapeHtml(pr) + ' to approve →</a>');
+    }
+    return page('⚠ Could not post approval',
+      'Tap to open the PR and approve manually.<br><br>' +
+      '<a href="' + prUrl + '">Open PR #' + escapeHtml(pr) + '</a>' +
+      '<br><br><pre>' + escapeHtml(c.text.slice(0, 500)) + '</pre>');
   }
 
-  // 2. For Approve & Merge, attempt the merge now.
+  // 2. For Approve & Merge, attempt the merge now (also retried on rate limit).
   if (action === 'approve_merge') {
-    var m = gh('put', '/repos/' + owner + '/' + repo + '/pulls/' + pr + '/merge',
-               ghToken, { merge_method: mergeMethod });
+    var m = ghRetry('put', '/repos/' + owner + '/' + repo + '/pulls/' + pr + '/merge',
+                    ghToken, { merge_method: mergeMethod });
     if (m.code >= 200 && m.code < 300) {
       return page('🚀 Approved & merged',
         '<b>' + escapeHtml(repo) + ' #' + escapeHtml(pr) + '</b> is merged.');
+    }
+    if (isRateLimited(m)) {
+      return page('✅ Approved — merge is rate-limited',
+        'Your approval is posted. GitHub is rate-limiting the merge right now ' +
+        '(we retried once). Tap to open the PR and merge manually.<br><br>' +
+        '<a href="' + prUrl + '">Open PR #' + escapeHtml(pr) + ' to merge →</a>');
     }
     return page('✅ Approved — merge pending',
       'Approval posted, but the merge could not complete yet (HTTP ' + m.code +
@@ -99,7 +116,49 @@ function gh(method, path, token, payload) {
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   });
-  return { code: resp.getResponseCode(), text: resp.getContentText() };
+  return {
+    code: resp.getResponseCode(),
+    text: resp.getContentText(),
+    headers: resp.getAllHeaders()
+  };
+}
+
+// GitHub rate limits surface as HTTP 403 (primary or secondary) or 429, with
+// either X-RateLimit-Remaining: 0 or a "rate limit"/"secondary rate
+// limit"/"abuse" message. A single retry after a short backoff usually clears
+// a brief secondary limit; if it doesn't, the caller degrades to a manual link
+// instead of showing a scary error.
+function ghRetry(method, path, token, payload) {
+  var r = gh(method, path, token, payload);
+  if (isRateLimited(r)) {
+    Utilities.sleep(retryAfterMs(r));
+    r = gh(method, path, token, payload);
+  }
+  return r;
+}
+
+function isRateLimited(r) {
+  if (r.code !== 403 && r.code !== 429) return false;
+  if (String(headerValue(r.headers, 'X-RateLimit-Remaining')) === '0') return true;
+  return /rate limit|secondary rate|abuse/i.test(r.text || '');
+}
+
+function retryAfterMs(r) {
+  var ra = headerValue(r.headers, 'Retry-After');
+  var secs = ra ? parseInt(ra, 10) : NaN;
+  if (!isNaN(secs) && secs > 0) return Math.min(secs, 8) * 1000;  // honor, cap 8s
+  return 2000;  // default backoff (the operator is waiting on this tap)
+}
+
+function headerValue(headers, name) {
+  if (!headers) return '';
+  var lower = name.toLowerCase();
+  for (var k in headers) {
+    if (k.toLowerCase() === lower) {
+      return Array.isArray(headers[k]) ? headers[k][0] : headers[k];
+    }
+  }
+  return '';
 }
 
 function hmacHex(secret, message) {

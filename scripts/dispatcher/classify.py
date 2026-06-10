@@ -5,12 +5,14 @@ request's changed files and diff content, returns one of three tiers:
 
 - routine: docs only
 - backend: backend code, but not safety-relevant
-- high_stakes: anything that could affect safety, broker, strategy,
-  promotion, the dispatcher itself, or unknown paths
+- high_stakes: anything that could affect safety/security, infra, the build,
+  dependencies, or unknown paths
 
-Section 4 is canonical. The path patterns and content tokens here are a
-direct mirror of Section 4. Section 12 of the design doc explicitly states
-that Section 4 wins if the two ever disagree.
+The module-level pattern/token constants are GENERIC, project-agnostic
+defaults. A consuming repo tailors them via its .peer-review.json (loaded into
+a RepoConfig and passed to classify()); project-specific danger rules live
+there, not here. With no config, the generic defaults plus the deny-first
+unknown-path rule keep classification safe.
 
 This module is pure: it takes data in, returns a tier. No I/O, no state.
 """
@@ -51,71 +53,61 @@ ROUTINE_PATH_PATTERNS: tuple[str, ...] = (
     ".github/PULL_REQUEST_TEMPLATE.md",
 )
 
+# GENERIC, project-agnostic defaults. These are the danger paths that are
+# risky to change in almost ANY repo (CI, containerization, dependency
+# manifests, infra/deploy). Project-specific danger paths — a trading system's
+# broker/promotion modules, a payments app's billing code — belong in that
+# repo's .peer-review.json `high_stakes_paths`, NOT here. A repo with no config
+# is still safe: unknown paths default to high_stakes (deny-first) below.
 HIGH_STAKES_PATH_PATTERNS: tuple[str, ...] = (
-    "backend/app/promotion_gate.py",
-    "backend/app/lookahead_audit.py",
-    "backend/app/walk_forward_oos.py",
-    "backend/app/execution_cost_gate.py",
-    "backend/app/candidate_artifact_pipeline.py",
-    "backend/app/research_director*.py",
-    "backend/app/*candidate*.py",
-    "backend/app/broker*.py",
-    "backend/app/schwab*.py",
-    "backend/app/order*.py",
-    "backend/app/scanner*.py",
-    "backend/app/risk*.py",
-    "backend/app/safety_*.py",
-    "backend/app/execution*.py",
-    "backend/app/settings*.py",
-    "backend/app/trading_mode*.py",
-    "backend/app/main.py",
-    "backend/app/config*.py",
     ".github/workflows/**",
-    "scripts/dispatcher/**",
-    "docs/tradewatcher_operating_contract_*.md",
+    "Dockerfile",
+    "docker-compose*.yml",
+    ".env",
+    ".env.*",
+    "deploy/**",
+    "infra/**",
     "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
     "requirements*.txt",
     "requirements/*.txt",
-    "docker-compose*.yml",
-    "Dockerfile",
-    ".env.example",
-    "deploy/**",
-    "scanner_settings*.json",
-    "scanner_workspace_settings*.json",
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "go.mod",
+    "go.sum",
+    "Cargo.toml",
+    "Cargo.lock",
+    "Gemfile",
+    "Gemfile.lock",
 )
 
 BACKEND_PATH_ROOTS: tuple[str, ...] = (
-    "backend/app/",
+    "src/",
     "tests/",
 )
 
 
 # ---- Content tokens --------------------------------------------------------
 
+# Generic, universally-dangerous content signals. Project-specific safety
+# tokens (e.g. a trading system's `paper_only` / `live_orders_enabled`) go in
+# the repo's .peer-review.json `content_scan_safety_tokens`.
 CONTENT_SAFETY_TOKENS: tuple[str, ...] = (
-    "paper_only",
-    "live_orders_enabled",
-    "broker_order_submitted",
-    "dry_run",
-    "internal_paper",
-    "promotion_allowed",
-    "allocation_increase_allowed",
-    "live_trading_enabled",
-    "place_order",
-    "submit_order",
-    "route_order",
-    "send_order",
     "force_push",
     "--no-verify",
+    "DROP TABLE",
+    "private_key",
+    "secret_key",
+    "BEGIN RSA PRIVATE KEY",
+    "BEGIN OPENSSH PRIVATE KEY",
+    "AWS_SECRET_ACCESS_KEY",
 )
 
 CONTENT_SAFETY_PATTERNS: tuple[str, ...] = (
-    r"broker\.[A-Za-z_][A-Za-z0-9_]*\s*\(",
-    r"schwab\.[A-Za-z_][A-Za-z0-9_]*\s*\(",
-    r"order\.[A-Za-z_][A-Za-z0-9_]*\s*\(",
-    r"execution\.[A-Za-z_][A-Za-z0-9_]*\s*\(",
     r"git\s+push\s+--force",
-    r"mode\s*=\s*[\"']internal_paper[\"']",
 )
 
 
@@ -193,7 +185,7 @@ def _attr(config: Any, name: str, default: Sequence[str]) -> Sequence[str]:
 
     ``config`` is duck-typed (a RepoConfig, but classify deliberately does not
     import RepoConfig to avoid a circular import). When config is None, the
-    module defaults — which equal the current TradeWatcher values — are used.
+    generic module-level defaults are used.
     """
     if config is None:
         return default
@@ -208,8 +200,8 @@ def classify(
     """Classify a PR into routine / backend / high_stakes.
 
     ``config`` is an optional repo_config.RepoConfig (duck-typed). When None,
-    the module-level defaults are used, which equal the current TradeWatcher
-    values — so classify(files, diff) is unchanged for StockTrader.
+    the generic module-level defaults are used; a consuming repo supplies its
+    project-specific rules through its .peer-review.json.
 
     Order of evaluation:
     1. Content scan first. If the diff contains any safety token or matches

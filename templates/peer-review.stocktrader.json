@@ -1,0 +1,108 @@
+{
+  "$comment": "StockTrader's gold-standard ruleset, ported verbatim from the dispatcher's former hard-coded defaults. Commit this to NFS-247/StockTrader at the repo root as .peer-review.json BEFORE re-pinning the dispatcher to the Cut-1 tag. With this file in place, StockTrader's classification, head-lock, rosters, budgets and ceilings are byte-for-byte what they were when these values lived in classify.py / escalation.py. Field reference: ai-peer-review.schema.json.",
+
+  "project_name": "TradeWatcher",
+  "operator_github_login": "NERT24",
+
+  "project_description": "a private research / paper-trading repository. The system is paper-only: it does not place broker orders, does not enable live trading, and does not promote strategies automatically.",
+  "review_guidance": [
+    "Lookahead bias (using future information at the entry timestamp)",
+    "Safety flag changes (paper_only, live_orders_enabled, broker_order_submitted, dry_run, mode)",
+    "Broker or order submission code paths",
+    "Changes that touch the operating contract or its safety invariants",
+    "Discovery/introspection-based callable selection (this has bitten this project four times)",
+    "Sample-fixture replay masquerading as real data",
+    "Promotion of gate-rejected candidates",
+    "Walk-forward / out-of-sample audit correctness (lookahead_audit, walk_forward_oos)"
+  ],
+
+  "high_stakes_paths": [
+    "backend/app/promotion_gate.py",
+    "backend/app/lookahead_audit.py",
+    "backend/app/walk_forward_oos.py",
+    "backend/app/execution_cost_gate.py",
+    "backend/app/candidate_artifact_pipeline.py",
+    "backend/app/research_director*.py",
+    "backend/app/*candidate*.py",
+    "backend/app/broker*.py",
+    "backend/app/schwab*.py",
+    "backend/app/order*.py",
+    "backend/app/scanner*.py",
+    "backend/app/risk*.py",
+    "backend/app/safety_*.py",
+    "backend/app/execution*.py",
+    "backend/app/settings*.py",
+    "backend/app/trading_mode*.py",
+    "backend/app/main.py",
+    "backend/app/config*.py",
+    ".github/workflows/**",
+    "scripts/dispatcher/**",
+    "docs/tradewatcher_operating_contract_*.md",
+    "pyproject.toml",
+    "requirements*.txt",
+    "requirements/*.txt",
+    "docker-compose*.yml",
+    "Dockerfile",
+    ".env.example",
+    "deploy/**",
+    "scanner_settings*.json",
+    "scanner_workspace_settings*.json"
+  ],
+
+  "content_scan_safety_tokens": [
+    "paper_only",
+    "live_orders_enabled",
+    "broker_order_submitted",
+    "dry_run",
+    "internal_paper",
+    "promotion_allowed",
+    "allocation_increase_allowed",
+    "live_trading_enabled",
+    "place_order",
+    "submit_order",
+    "route_order",
+    "send_order",
+    "force_push",
+    "--no-verify"
+  ],
+
+  "content_scan_safety_patterns": [
+    "broker\\.[A-Za-z_][A-Za-z0-9_]*\\s*\\(",
+    "schwab\\.[A-Za-z_][A-Za-z0-9_]*\\s*\\(",
+    "order\\.[A-Za-z_][A-Za-z0-9_]*\\s*\\(",
+    "execution\\.[A-Za-z_][A-Za-z0-9_]*\\s*\\(",
+    "git\\s+push\\s+--force",
+    "mode\\s*=\\s*[\"']internal_paper[\"']"
+  ],
+
+  "routine_root_exact": ["README.md", ".gitignore", "LICENSE"],
+  "routine_root_globs": ["*.md"],
+  "routine_path_patterns": [
+    "docs/**/*.md",
+    ".github/ISSUE_TEMPLATE/**",
+    ".github/PULL_REQUEST_TEMPLATE.md"
+  ],
+  "backend_path_roots": ["backend/app/", "tests/"],
+
+  "head_lock_paths": [
+    "backend/app/promotion_gate.py",
+    "backend/app/safety_*.py",
+    "backend/app/broker*.py",
+    "backend/app/schwab*.py",
+    ".github/workflows/**",
+    "docs/tradewatcher_operating_contract_*"
+  ],
+
+  "routine_reviewers": ["claude", "gpt"],
+  "backend_reviewers": ["claude", "gpt"],
+  "high_stakes_reviewers": ["claude", "gpt", "gemini"],
+
+  "max_review_rounds": 6,
+  "routine_round_budget": 3,
+  "backend_round_budget": 3,
+  "high_stakes_round_budget": 2,
+  "per_pr_cost_ceiling_usd": 5.0,
+  "daily_cost_ceiling_usd": 20.0,
+
+  "escalation_cooldown_minutes": 10
+}

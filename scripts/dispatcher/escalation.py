@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Sequence
 
+from .classify import _match_any
 from .converge import ConvergenceState
 
 
@@ -35,32 +37,37 @@ class EscalationDecision:
     detail: str
 
 
-HEAD_LOCK_PATH_PATTERNS = (
-    "backend/app/promotion_gate.py",
-    "backend/app/safety_*.py",
-    "backend/app/broker*.py",
-    "backend/app/schwab*.py",
-    ".github/workflows/",
-    "docs/tradewatcher_operating_contract_",
-)
+# Triggers that mean "the operator should look at this PR's review outcome".
+# These are cooldown-gated: the dispatcher waits until the dev agent has gone
+# quiet (no new commit for the cooldown window) before pinging, so the phone
+# never fires mid-iteration while fixes are still landing. Everything NOT in
+# this set is a stop-the-world infra/budget condition and pings immediately.
+COOLDOWN_GATED_TRIGGERS = frozenset({
+    EscalationTrigger.DISAGREEMENT_AFTER_BUDGET,
+    EscalationTrigger.HIGH_STAKES_FIRST_DISSENT,
+    EscalationTrigger.CI_PERSISTENT_FAILURE,
+    EscalationTrigger.HIGH_STAKES_AUTO,
+    EscalationTrigger.SUSPICIOUS_UNANIMOUS,
+})
 
 
-def _diff_touches_head_lock(changed_files: list[str]) -> bool:
+# Head-lock paths are PROJECT-SPECIFIC (e.g. a trading system's broker/safety/
+# promotion modules that must get explicit operator sign-off before merge even
+# when the AI reviewers converge). They live in the repo's .peer-review.json
+# `head_lock_paths`; the generic default is empty, so a repo with no config
+# relies on tier classification alone. Matched with the same fnmatch-glob
+# semantics as classify's path patterns (so ``.github/workflows/**`` etc. work).
+HEAD_LOCK_PATH_PATTERNS: tuple[str, ...] = ()
+
+
+def _diff_touches_head_lock(
+    changed_files: list[str],
+    head_lock_paths: Sequence[str] = HEAD_LOCK_PATH_PATTERNS,
+) -> bool:
+    """True if any changed file matches a head-lock glob (operator-gated path)."""
     for path in changed_files:
-        for pat in HEAD_LOCK_PATH_PATTERNS:
-            if pat.endswith("*.py"):
-                root = pat[:-4]
-                if path.startswith(root) and path.endswith(".py"):
-                    return True
-            elif pat.endswith("/"):
-                if path.startswith(pat):
-                    return True
-            elif pat.endswith("_"):
-                if path.startswith(pat):
-                    return True
-            else:
-                if path == pat:
-                    return True
+        if _match_any(path, head_lock_paths):
+            return True
     return False
 
 
@@ -79,6 +86,7 @@ def decide_escalation(
     daily_cost_usd: float = 0.0,
     daily_cost_ceiling_usd: float = 0.0,
     required_reviewer_unavailable: bool = False,
+    head_lock_paths: Sequence[str] = (),
 ) -> EscalationDecision:
     """Decide whether this PR should be escalated. Order of checks matters."""
 
@@ -135,7 +143,7 @@ def decide_escalation(
             detail=f"PR has reached {max_review_rounds} review rounds without convergence.",
         )
 
-    if tier == "high_stakes" and _diff_touches_head_lock(changed_files):
+    if tier == "high_stakes" and _diff_touches_head_lock(changed_files, head_lock_paths):
         return EscalationDecision(
             trigger=EscalationTrigger.HIGH_STAKES_AUTO,
             reason_short="high-stakes file changed; operator review required",
@@ -179,9 +187,32 @@ def decide_escalation(
     )
 
 
+def cooldown_elapsed(
+    *,
+    pending_since: float,
+    pending_head_sha: str,
+    current_head_sha: str,
+    now_ts: float,
+    cooldown_minutes: int,
+) -> bool:
+    """Whether a deferred escalation is now due to ping. Pure function.
+
+    Due iff there IS a pending escalation, the cooldown is enabled, the head
+    has NOT changed since it was recorded (a new commit supersedes/re-arms),
+    and the quiet window has elapsed.
+    """
+    if not pending_since or cooldown_minutes <= 0:
+        return False
+    if pending_head_sha != current_head_sha:
+        return False  # superseded by a new commit
+    return (now_ts - pending_since) >= cooldown_minutes * 60
+
+
 __all__ = [
     "EscalationTrigger",
     "EscalationDecision",
     "decide_escalation",
     "HEAD_LOCK_PATH_PATTERNS",
+    "COOLDOWN_GATED_TRIGGERS",
+    "cooldown_elapsed",
 ]

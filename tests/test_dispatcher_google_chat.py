@@ -116,6 +116,41 @@ def test_build_approve_url_empty_base_returns_empty():
     assert gc.build_approve_url("", repo="R", pr_number=5) == ""
 
 
+def test_ready_card_has_header_and_merge_button():
+    card = gc.build_ready_card(
+        project_name="Canary", pr_number=42,
+        pr_url="https://github.com/NFS-247/Canary/pull/42",
+        pr_title="Add feature", tier="backend",
+        approve_merge_url="https://x/exec?action=approve_merge",
+    )
+    c = card["cardsV2"][0]["card"]
+    assert c["header"]["title"] == "Canary: PR #42 ready to merge"
+    assert "backend" in c["header"]["subtitle"]
+    buttons = c["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+    assert [b["text"] for b in buttons] == ["🚀 Approve & Merge", "Open PR #42"]
+    assert buttons[0]["onClick"]["openLink"]["url"].endswith("action=approve_merge")
+
+
+def test_ready_card_without_merge_url_only_open():
+    card = gc.build_ready_card(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="t", tier="routine",
+    )
+    buttons = card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+    assert [b["text"] for b in buttons] == ["Open PR #1"]
+
+
+def test_ready_card_escapes_html_in_title():
+    card = gc.build_ready_card(
+        project_name="P", pr_number=1, pr_url="http://x/1",
+        pr_title="fix <b> & x", tier="routine",
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    # The injected <b> from the title is escaped; "fix <b>" would only appear
+    # unescaped if the title weren't escaped.
+    assert "&lt;b&gt;" in text and "&amp;" in text
+    assert "fix <b>" not in text
+
+
 def test_card_escapes_html_in_title():
     card = gc.build_escalation_card(
         project_name="P",

@@ -168,6 +168,36 @@ def test_no_operator_note_no_section():
     assert "OPERATOR INSTRUCTION FOR THIS ROUND" not in p
 
 
+def test_prompt_injects_project_context():
+    # Multi-tenancy: domain framing + bug classes come from config, not a
+    # dispatcher hard-code.
+    p = build_review_prompt(
+        reviewer="gpt", pr_number=2, pr_title="t", pr_body="b", diff_text="d",
+        tier="backend", round_=1,
+        project_description="a paper-only trading system; it never places broker orders.",
+        review_guidance=["Lookahead bias", "Broker order paths"],
+    )
+    assert "a paper-only trading system" in p
+    assert "Specifically for THIS project" in p
+    assert "- Lookahead bias" in p
+    assert "- Broker order paths" in p
+
+
+def test_prompt_generic_without_project_context():
+    p = build_review_prompt(
+        reviewer="gpt", pr_number=2, pr_title="t", pr_body="b", diff_text="d",
+        tier="backend", round_=1,
+    )
+    # No project supplied -> no project-specific section, but still adversarial
+    # with the strict JSON schema.
+    assert "Specifically for THIS project" not in p
+    assert "adversarial review" in p
+    assert '"verdict"' in p
+    # And no StockTrader leakage in the generic prompt.
+    assert "TradeWatcher" not in p
+    assert "paper-only" not in p
+
+
 def test_investigate_threads_note_into_round(monkeypatch):
     api = FakeAPI()
     cfg = _cfg(secret="real-secret")

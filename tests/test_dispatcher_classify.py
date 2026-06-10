@@ -1,11 +1,27 @@
 """Tests for scripts.dispatcher.classify."""
 
+import pathlib
+
 from scripts.dispatcher.classify import (
     TIER_BACKEND,
     TIER_HIGH_STAKES,
     TIER_ROUTINE,
     classify,
 )
+from scripts.dispatcher.repo_config import load_repo_config
+
+# StockTrader's ruleset now lives in a committed config file, not in the
+# dispatcher's hard-coded defaults. Loading it here proves the port reproduces
+# the old behavior (broker/promotion/paper_only -> high_stakes).
+_STOCKTRADER_CFG_PATH = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "templates"
+    / "peer-review.stocktrader.json"
+)
+
+
+def _stocktrader_cfg():
+    return load_repo_config(_STOCKTRADER_CFG_PATH)
 
 
 def test_pure_readme_is_routine():
@@ -22,8 +38,9 @@ def test_docs_only_is_routine():
 
 
 def test_backend_module_is_backend():
+    # src/ is a generic backend root.
     result = classify(
-        ["backend/app/some_module.py"],
+        ["src/some_module.py"],
         diff_text="def foo():\n    return 1\n",
     )
     assert result.tier == TIER_BACKEND
@@ -37,37 +54,51 @@ def test_test_file_is_backend():
     assert result.tier == TIER_BACKEND
 
 
-def test_promotion_gate_is_high_stakes():
+def test_stocktrader_promotion_gate_is_high_stakes():
     result = classify(
         ["backend/app/promotion_gate.py"],
         diff_text="def evaluate(): pass\n",
+        config=_stocktrader_cfg(),
     )
     assert result.tier == TIER_HIGH_STAKES
     assert "backend/app/promotion_gate.py" in result.matched_paths
 
 
-def test_broker_glob_is_high_stakes():
+def test_stocktrader_broker_glob_is_high_stakes():
     result = classify(
         ["backend/app/broker_adapter.py"],
         diff_text="x = 1\n",
+        config=_stocktrader_cfg(),
     )
     assert result.tier == TIER_HIGH_STAKES
 
 
-def test_research_director_glob_is_high_stakes():
+def test_stocktrader_research_director_glob_is_high_stakes():
     result = classify(
         ["backend/app/research_director_oos.py"],
         diff_text="x = 1\n",
+        config=_stocktrader_cfg(),
     )
     assert result.tier == TIER_HIGH_STAKES
 
 
-def test_candidate_glob_is_high_stakes():
+def test_stocktrader_candidate_glob_is_high_stakes():
     result = classify(
         ["backend/app/premarket_move_gte_1_candidate.py"],
         diff_text="x = 1\n",
+        config=_stocktrader_cfg(),
     )
     assert result.tier == TIER_HIGH_STAKES
+
+
+def test_stocktrader_backend_module_is_backend():
+    # backend/app/ is a backend root in StockTrader's own config.
+    result = classify(
+        ["backend/app/some_module.py"],
+        diff_text="def foo():\n    return 1\n",
+        config=_stocktrader_cfg(),
+    )
+    assert result.tier == TIER_BACKEND
 
 
 def test_workflows_are_high_stakes():
@@ -102,29 +133,33 @@ def test_requirements_is_high_stakes():
     assert result.tier == TIER_HIGH_STAKES
 
 
-def test_content_scan_paper_only_is_high_stakes():
-    # Even though README.md is routine by path, the content has paper_only.
+def test_stocktrader_content_scan_paper_only_is_high_stakes():
+    # Even though README.md is routine by path, StockTrader's config lists
+    # paper_only as a safety token, forcing high_stakes.
     result = classify(
         ["README.md"],
         diff_text="+ paper_only = True\n",
+        config=_stocktrader_cfg(),
     )
     assert result.tier == TIER_HIGH_STAKES
     assert "paper_only" in result.matched_tokens
 
 
-def test_content_scan_live_orders_enabled_is_high_stakes():
+def test_stocktrader_content_scan_live_orders_enabled_is_high_stakes():
     result = classify(
         ["README.md"],
         diff_text="+ live_orders_enabled = True\n",
+        config=_stocktrader_cfg(),
     )
     assert result.tier == TIER_HIGH_STAKES
     assert "live_orders_enabled" in result.matched_tokens
 
 
-def test_content_scan_broker_method_call_pattern_is_high_stakes():
+def test_stocktrader_content_scan_broker_method_call_pattern_is_high_stakes():
     result = classify(
         ["docs/some.md"],
         diff_text="example: broker.place_order(symbol='AAPL')\n",
+        config=_stocktrader_cfg(),
     )
     assert result.tier == TIER_HIGH_STAKES
 
@@ -155,8 +190,9 @@ def test_mixed_routine_plus_high_stakes_is_high_stakes():
     assert result.tier == TIER_HIGH_STAKES
 
 
-def test_new_module_with_safety_name_is_high_stakes():
-    # backend/app/trading_mode.py is a Section 4 pattern.
+def test_unknown_backend_path_is_high_stakes_by_default():
+    # backend/app/ is not a generic backend root, so an unrecognized file there
+    # falls through to the deny-first unknown-path default.
     result = classify(
         ["backend/app/trading_mode.py"],
         diff_text="MODE = 'paper'\n",
@@ -176,8 +212,8 @@ def test_root_markdown_is_routine():
 
 def test_backend_markdown_is_backend_not_routine():
     # Regression for GPT review #7: *.md must be root-only. A markdown file
-    # nested under backend/app/ must NOT be classified routine.
-    result = classify(["backend/app/some_doc.md"], diff_text="notes\n")
+    # nested under a backend root (src/) must NOT be classified routine.
+    result = classify(["src/some_doc.md"], diff_text="notes\n")
     assert result.tier == TIER_BACKEND
 
 

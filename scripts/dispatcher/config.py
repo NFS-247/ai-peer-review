@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .classify import TIER_BACKEND, TIER_HIGH_STAKES, TIER_ROUTINE
-from .repo_config import RepoConfig, load_repo_config
+from .repo_config import DEFAULT_CONFIG_PATH, RepoConfig, resolve_repo_config
 
 
 @dataclass(frozen=True)
@@ -48,9 +48,14 @@ class DispatcherConfig:
     max_review_rounds: int = 6
     per_pr_cost_ceiling_usd: float = 5.0
     daily_cost_ceiling_usd: float = 20.0
+    escalation_cooldown_minutes: int = 10
+    # Billing (see usage.py): how this tenant is charged for AI usage.
+    billing_mode: str = "byok"
+    usage_markup_multiplier: float = 1.0
+    dev_fee_usd: float = 0.0
 
     # The full per-repo config. main passes this to classify() so path/token
-    # classification is project-specific. Defaults to TradeWatcher values.
+    # classification is project-specific. Defaults to generic values.
     repo_config: RepoConfig = field(default_factory=RepoConfig)
 
 
@@ -90,6 +95,9 @@ def default_tiers() -> dict[str, TierConfig]:
 
 
 REPO_CONFIG_PATH_ENV = "REPO_CONFIG_PATH"
+# Optional second location tried when the primary file is absent, so repos
+# still carrying the old .github/ai-peer-review.json keep working unchanged.
+REPO_CONFIG_LEGACY_PATH_ENV = "REPO_CONFIG_LEGACY_PATH"
 
 
 def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
@@ -100,8 +108,8 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
 
     Secrets always come from env (they are GitHub Actions secrets and never
     live in a committed config file). The repo config file is optional; when
-    absent, RepoConfig defaults equal the current TradeWatcher values, so
-    StockTrader behavior is unchanged.
+    absent, generic deny-first defaults apply and project_name falls back to
+    the repo name.
     """
     e = env if env is not None else os.environ
 
@@ -115,10 +123,17 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         cleaned = raw.strip()
         return cleaned or None
 
-    rc = load_repo_config(e.get(REPO_CONFIG_PATH_ENV, ".github/ai-peer-review.json"))
+    rc = resolve_repo_config(
+        e.get(REPO_CONFIG_PATH_ENV, DEFAULT_CONFIG_PATH),
+        e.get(REPO_CONFIG_LEGACY_PATH_ENV),
+    )
 
-    # env override > config file value
-    project_name = e.get("PROJECT_NAME") or rc.project_name
+    repo_name = _repo_name_from_env(e)
+
+    # env override > config file value > generic fallback
+    # project_name falls back to the repo name so escalation pings/labels are
+    # never blank, even for a tenant that ships no config.
+    project_name = e.get("PROJECT_NAME") or rc.project_name or repo_name
     operator_login = e.get("OPERATOR_GITHUB_LOGIN") or rc.operator_github_login
     max_rounds = int(e["MAX_REVIEW_ROUNDS"]) if e.get("MAX_REVIEW_ROUNDS") else rc.max_review_rounds
     per_pr_ceiling = (
@@ -131,13 +146,25 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         if e.get("DAILY_COST_CEILING_USD")
         else rc.daily_cost_ceiling_usd
     )
+    cooldown = (
+        int(e["ESCALATION_COOLDOWN_MINUTES"])
+        if e.get("ESCALATION_COOLDOWN_MINUTES")
+        else rc.escalation_cooldown_minutes
+    )
+    billing_mode = (e.get("BILLING_MODE") or rc.billing_mode or "byok").strip().lower()
+    usage_markup = (
+        float(e["USAGE_MARKUP_MULTIPLIER"])
+        if e.get("USAGE_MARKUP_MULTIPLIER")
+        else rc.usage_markup_multiplier
+    )
+    dev_fee = float(e["DEV_FEE_USD"]) if e.get("DEV_FEE_USD") else rc.dev_fee_usd
 
     return DispatcherConfig(
         project_name=project_name,
         operator_email=(e.get("OPERATOR_EMAIL", "") or "").strip(),
         operator_github_login=operator_login,
         repo_owner=e.get("GITHUB_REPOSITORY_OWNER", "NFS-247"),
-        repo_name=_repo_name_from_env(e),
+        repo_name=repo_name,
         anthropic_api_key=secret("ANTHROPIC_API_KEY"),
         openai_api_key=secret("OPENAI_API_KEY"),
         gemini_api_key=secret("GEMINI_API_KEY"),
@@ -151,6 +178,10 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         max_review_rounds=max_rounds,
         per_pr_cost_ceiling_usd=per_pr_ceiling,
         daily_cost_ceiling_usd=daily_ceiling,
+        escalation_cooldown_minutes=cooldown,
+        billing_mode=billing_mode,
+        usage_markup_multiplier=usage_markup,
+        dev_fee_usd=dev_fee,
         repo_config=rc,
     )
 

@@ -1,13 +1,12 @@
 """Prompt construction for AI reviewers.
 
-Each reviewer gets the same factual inputs (PR title, body, diff, tier,
-round, prior review history). Prompts are framed to elicit JSON output in
-the strict schema required by verdict.parse_ai_json_response.
-
-The prompt also gives each reviewer context about TradeWatcher's specific
-bug classes and the operating contract. This is what makes the review
-adversarial: reviewers are explicitly told what kinds of mistakes have
-hurt this project before and asked to look for them.
+Each reviewer gets the same factual inputs (PR title, body, diff, tier, round,
+prior review history) plus project context supplied by the consuming repo's
+config: ``project_description`` (what this repo is) and ``review_guidance``
+(the bug classes that have hurt it before). The base instructions are
+project-agnostic; a repo injects its own domain-specific concerns via its
+.peer-review.json rather than the dispatcher hard-coding any one project's
+risk model. This is what keeps review adversarial AND multi-tenant.
 """
 
 from __future__ import annotations
@@ -16,30 +15,26 @@ from textwrap import dedent
 from typing import Sequence
 
 
-COMMON_INSTRUCTIONS = dedent("""
-    You are reviewing a pull request on a private research/paper-trading
-    repository called TradeWatcher. The system is paper-only. It does not
-    place broker orders. It does not enable live trading. It does not
-    promote strategies automatically.
+# Project-agnostic adversarial-review instructions. The project framing (what
+# this repo is) and project-specific bug classes (what has hurt it before) are
+# injected from config — see build_common_instructions.
+_BASE_INSTRUCTIONS_HEAD = dedent("""
+    You are reviewing a pull request.{project_line}
 
     Your job is adversarial review: find things that are wrong, missing,
     or risky. Do not be polite. Do not approve to be helpful. Approve only
     when you have actually verified the change is safe and correct.
 
-    Specifically look for:
-    - Lookahead bias (using future information at entry timestamp)
-    - Safety flag changes (paper_only, live_orders_enabled,
-      broker_order_submitted, dry_run, mode)
-    - Broker or order submission code paths
-    - Changes that touch the operating contract or its safety invariants
-    - Stale tests against deleted helpers
-    - Duplicate function definitions in the same file
-    - Discovery/introspection-based callable selection (this has bitten
-      this project four times)
-    - Sample-fixture replay masquerading as real data
-    - Promotion of gate-rejected candidates
+    Always look for:
+    - Bugs, logic errors, and unhandled edge cases
+    - Security problems (injection, secret/credential leakage, auth/authz)
+    - Changes that touch safety-critical, irreversible, or money-moving behavior
+    - Stale tests against deleted helpers; tests that don't exercise the change
+    - Duplicate or dead code
     - PRs that bundle unrelated work (one objective per PR)
+""").strip()
 
+_SCHEMA_TAIL = dedent("""
     Your response MUST be a single JSON object with this exact schema:
 
     {
@@ -61,6 +56,36 @@ COMMON_INSTRUCTIONS = dedent("""
 """).strip()
 
 
+def build_common_instructions(
+    *, project_description: str = "", review_guidance: Sequence[str] = ()
+) -> str:
+    """Assemble reviewer instructions from the generic base + project context.
+
+    ``project_description`` is one or two sentences about what the repo is
+    (e.g. "a paper-only trading system; it never places broker orders").
+    ``review_guidance`` is a list of project-specific bug classes to hunt for.
+    Both default empty, yielding fully generic instructions.
+    """
+    project_line = ""
+    if project_description.strip():
+        project_line = " " + project_description.strip()
+    head = _BASE_INSTRUCTIONS_HEAD.format(project_line=project_line)
+
+    guidance_section = ""
+    if review_guidance:
+        bullets = "\n".join(f"    - {g}" for g in review_guidance)
+        guidance_section = (
+            "\n\n    Specifically for THIS project, also look for:\n" + bullets
+        )
+
+    return f"{head}{guidance_section}\n\n{_SCHEMA_TAIL}"
+
+
+# Generic instructions with no project context. Kept as a module constant so
+# existing imports of COMMON_INSTRUCTIONS still resolve.
+COMMON_INSTRUCTIONS = build_common_instructions()
+
+
 def build_review_prompt(
     *,
     reviewer: str,
@@ -72,13 +97,23 @@ def build_review_prompt(
     round_: int,
     prior_review_history: Sequence[str] = (),
     operator_note: str = "",
+    project_description: str = "",
+    review_guidance: Sequence[str] = (),
 ) -> str:
     """Build the user-facing prompt for an AI reviewer.
 
     ``operator_note`` carries the text from an OPERATOR INVESTIGATE/DISCUSS
     command. When present it is surfaced prominently so reviewers focus on the
     operator's specific instruction for this round (design Section 7).
+    ``project_description`` / ``review_guidance`` inject the consuming repo's
+    domain context (from its .peer-review.json) so reviews are tailored per
+    tenant instead of hard-coded to one project.
     """
+    common = build_common_instructions(
+        project_description=project_description,
+        review_guidance=review_guidance,
+    )
+
     history_section = ""
     if prior_review_history:
         joined = "\n\n---\n\n".join(prior_review_history)
@@ -101,7 +136,7 @@ def build_review_prompt(
         """).strip() + "\n\n"
 
     return dedent(f"""
-        {COMMON_INSTRUCTIONS}
+        {common}
 
         ---
 
@@ -130,4 +165,4 @@ def build_review_prompt(
     """).strip()
 
 
-__all__ = ["COMMON_INSTRUCTIONS", "build_review_prompt"]
+__all__ = ["COMMON_INSTRUCTIONS", "build_common_instructions", "build_review_prompt"]
