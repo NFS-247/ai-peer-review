@@ -262,3 +262,39 @@ def test_non_budget_escalation_keeps_approve_buttons(tmp_path):
     section = sent["card"]["cardsV2"][0]["card"]["sections"][0]
     texts = [b["text"] for b in section["widgets"][1]["buttonList"]["buttons"]]
     assert "✅ Approve" in texts and "🚀 Approve & Merge" in texts
+
+
+def test_budget_email_omits_operator_approve():
+    # A budget stop's email/comment must NOT present OPERATOR APPROVE — reviews may
+    # not have run, so approving would mark an unreviewed PR ready (matches the
+    # Chat card, which drops Approve). Other escalations keep the full command set.
+    common = dict(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="T",
+        tier="high_stakes", branch="f/x", reason_short="24h spend ceiling reached",
+        detail="d", reviewer_summaries={}, ci_status="success", head_sha="abc",
+        diff_summary="+1-0", workflow_run_url="http://run",
+    )
+    budget = email_send.build_escalation_email(**common, is_budget_stop=True).text
+    normal = email_send.build_escalation_email(**common, is_budget_stop=False).text
+    assert "OPERATOR APPROVE" not in budget
+    assert "daily_cost_ceiling_usd" in budget          # points at raising the ceiling
+    assert "OPERATOR APPROVE" in normal                # unchanged for normal escalations
+
+
+def test_budget_pr_comment_fallback_omits_operator_approve(tmp_path):
+    # No email configured -> the durable channel is the PR comment (= body_text).
+    # For a budget stop it must also omit OPERATOR APPROVE.
+    from scripts.dispatcher.escalation import EscalationTrigger
+
+    cfg = _cfg({"GITHUB_REPOSITORY": "NFS-247/StockTrader"}, tmp_path)
+    api = _FakeAPI()
+    main._send_escalation(
+        cfg=cfg, api=api, pr_number=1, pr_url="http://x/1", pr_title="T",
+        tier="high_stakes", branch="f/x", head_sha="abc1234",
+        reason_short="24h spend ceiling reached", detail="d",
+        reviewer_summaries={}, ci_status=CIStatus.SUCCESS,
+        diff_summary="+1-0", workflow_run_url="http://run",
+        trigger=EscalationTrigger.DAILY_COST_SPIKE,
+    )
+    assert api.comments, "expected a durable PR-comment fallback"
+    assert "OPERATOR APPROVE" not in api.comments[0][1]

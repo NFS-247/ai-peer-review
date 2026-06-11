@@ -342,6 +342,7 @@ def _send_escalation(
         head_sha=head_sha,
         diff_summary=diff_summary,
         workflow_run_url=workflow_run_url,
+        is_budget_stop=(trigger == EscalationTrigger.DAILY_COST_SPIKE),
     ).text
 
     # Push channel: ping the operator's phone via Google Chat if configured.
@@ -1164,7 +1165,8 @@ def _run_review_round(
         # "all in-flight reviews are paused" behavior. Attach the per-model 24h
         # breakdown so the operator sees what drove the spend.
         spend_breakdown = None
-        if decision.trigger == EscalationTrigger.DAILY_COST_SPIKE:
+        is_budget_stop = decision.trigger == EscalationTrigger.DAILY_COST_SPIKE
+        if is_budget_stop:
             _pause_all_in_flight(api, reason="24h dispatcher spend ceiling reached")
             try:
                 # daily_total (the 24h total behind the ceiling decision, set
@@ -1191,7 +1193,7 @@ def _run_review_round(
             diff_summary=f"{len(changed_files)} file(s) changed",
             workflow_run_url=workflow_run_url,
             spend_breakdown=spend_breakdown,
-            spent_usd=daily_total,
+            spent_usd=daily_total if is_budget_stop else None,
             trigger=decision.trigger,
         )
 
