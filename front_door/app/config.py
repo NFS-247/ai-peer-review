@@ -51,7 +51,9 @@ def load(env: Optional[dict] = None) -> Config:
         approve_signing_secret=(e.get("APPROVE_SIGNING_SECRET") or "").strip(),
         api_base=(e.get("GITHUB_API_BASE") or "https://api.github.com").strip(),
         host=(e.get("FRONT_DOOR_HOST") or "127.0.0.1").strip(),
-        port=int(e.get("FRONT_DOOR_PORT") or "8000"),
+        # PORT is the convention every PaaS injects (Cloud Run/Render/Fly/Heroku);
+        # honor it first so the container "just works", then FRONT_DOOR_PORT.
+        port=int(e.get("PORT") or e.get("FRONT_DOOR_PORT") or "8000"),
         oauth_client_id=(e.get("GITHUB_OAUTH_CLIENT_ID") or "").strip(),
         oauth_client_secret=(e.get("GITHUB_OAUTH_CLIENT_SECRET") or "").strip(),
         oauth_scope=(e.get("FRONT_DOOR_OAUTH_SCOPE") or "repo").strip(),

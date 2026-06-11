@@ -1,0 +1,7 @@
+tests/
+**/__pycache__/
+**/*.pyc
+*.md
+.env
+Dockerfile
+.dockerignore
