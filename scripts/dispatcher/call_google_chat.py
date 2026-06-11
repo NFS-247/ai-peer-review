@@ -328,10 +328,13 @@ def build_disagreement_card(
     # output never depends on the caller's mapping order.
     buckets: dict[str, list[str]] = {"approve": [], "block": [], "other": []}
     for name, verdict in reviewer_summaries.items():
-        s = str(verdict).lower()
-        if "approve" in s:
+        # Summaries arrive as "<verdict> (round N)" — match the leading verdict
+        # TOKEN exactly. Substring matching would mis-bucket ("disapprove" contains
+        # "approve"); full-string equality would miss the "(round N)" suffix.
+        token = str(verdict).strip().lower().split(" ", 1)[0]
+        if token == "approve":
             buckets["approve"].append(name)
-        elif "request_changes" in s or "block" in s:
+        elif token in ("request_changes", "block"):
             buckets["block"].append(name)
         else:
             buckets["other"].append(name)

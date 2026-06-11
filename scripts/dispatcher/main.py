@@ -377,6 +377,18 @@ def _send_escalation(
                 # panel is split. Show the split + Approve-to-override / Open PR.
                 # Approve is a legitimate operator override here (unlike a budget
                 # stop, where reviews may not have run at all).
+                # Only offer one-tap Approve when it can be HMAC-signed; skip the
+                # builder entirely unless BOTH the web app and the signing secret
+                # are set, so no unsigned or partial link is ever produced.
+                approve_url = ""
+                if cfg.approve_webapp_url and cfg.approve_signing_secret:
+                    approve_url = build_approve_url(
+                        cfg.approve_webapp_url,
+                        repo=cfg.repo_name,
+                        pr_number=pr_number,
+                        action="approve",
+                        signing_secret=cfg.approve_signing_secret,
+                    )
                 card = build_disagreement_card(
                     project_name=cfg.project_name,
                     pr_number=pr_number,
@@ -385,16 +397,7 @@ def _send_escalation(
                     tier=tier,
                     reason_short=reason_short,
                     reviewer_summaries=reviewer_summaries,
-                    # Only offer one-tap Approve when it can be HMAC-signed — an
-                    # unsigned link is rejected by the Apps Script (and unsafe if a
-                    # backend were lax), so omit it without a signing secret.
-                    approve_url=build_approve_url(
-                        (cfg.approve_webapp_url or "") if cfg.approve_signing_secret else "",
-                        repo=cfg.repo_name,
-                        pr_number=pr_number,
-                        action="approve",
-                        signing_secret=cfg.approve_signing_secret or "",
-                    ),
+                    approve_url=approve_url,
                 )
             else:
                 card = build_escalation_card(

@@ -344,6 +344,22 @@ def test_disagreement_card_split_is_sorted_regardless_of_input_order():
     assert "✋ want changes: claude, gpt" in text       # sorted, not input order
 
 
+def test_disagreement_card_handles_round_suffix_in_verdict():
+    # Production summaries are "<verdict> (round N)" — the leading token is matched,
+    # so the round suffix doesn't shove a blocker into "no clear verdict".
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="t",
+        tier="high_stakes", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "request_changes (round 6)",
+                            "gpt": "request_changes (round 6)",
+                            "gemini": "approve (round 6)"},
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "✋ want changes: claude, gpt" in text
+    assert "✅ approve: gemini" in text
+    assert "no clear verdict" not in text   # the (round N) suffix didn't misbucket
+
+
 def test_send_requires_url():
     with pytest.raises(ValueError):
         gc.send_chat_message("", {"text": "hi"})

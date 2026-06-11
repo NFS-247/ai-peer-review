@@ -382,3 +382,53 @@ def test_disagreement_approve_gated_on_signing_secret(tmp_path):
     section = sent["card"]["cardsV2"][0]["card"]["sections"][0]
     texts = [b["text"] for b in section["widgets"][1]["buttonList"]["buttons"]]
     assert texts == ["Open PR #3"]   # no Approve button without a signing secret
+
+
+def test_all_disagreement_triggers_route_to_disagreement_card(tmp_path):
+    # Every "couldn't converge" trigger -> the disagreement card, never one-tap merge.
+    from scripts.dispatcher.escalation import DISAGREEMENT_TRIGGERS
+
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/nfs-central",
+    }, tmp_path)
+    for trig in DISAGREEMENT_TRIGGERS:
+        sent = {}
+        with mock.patch.object(main, "send_chat_message",
+                               lambda url, card: sent.update(card=card)):
+            main._send_escalation(
+                cfg=cfg, api=_FakeAPI(), pr_number=4, pr_url="http://x/4", pr_title="T",
+                tier="high_stakes", branch="f/x", head_sha="abc1234",
+                reason_short="r", detail="d",
+                reviewer_summaries={"claude": "request_changes", "gpt": "approve"},
+                ci_status=CIStatus.SUCCESS, diff_summary="+1-0", workflow_run_url="http://run",
+                trigger=trig,
+            )
+        c = sent["card"]["cardsV2"][0]["card"]
+        assert "reviewers split" in c["header"]["title"], f"{trig} -> disagreement card"
+        texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+        assert "🚀 Approve & Merge" not in texts, f"{trig} must never one-tap merge"
+
+
+def test_disagreement_approve_gated_when_webapp_url_missing(tmp_path):
+    # Signing secret set but NO web-app URL -> still no Approve (both are required).
+    from scripts.dispatcher.escalation import EscalationTrigger
+
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/nfs-central",
+        "APPROVE_SIGNING_SECRET": "sec",  # but no APPROVE_WEBAPP_URL
+    }, tmp_path)
+    sent = {}
+    with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
+        main._send_escalation(
+            cfg=cfg, api=_FakeAPI(), pr_number=5, pr_url="http://x/5", pr_title="T",
+            tier="high_stakes", branch="f/x", head_sha="abc1234",
+            reason_short="hard round cap reached", detail="d",
+            reviewer_summaries={"claude": "request_changes"},
+            ci_status=CIStatus.SUCCESS, diff_summary="+1-0", workflow_run_url="http://run",
+            trigger=EscalationTrigger.HARD_ROUND_CAP,
+        )
+    section = sent["card"]["cardsV2"][0]["card"]["sections"][0]
+    texts = [b["text"] for b in section["widgets"][1]["buttonList"]["buttons"]]
+    assert texts == ["Open PR #5"]   # both web app AND secret required
