@@ -175,3 +175,42 @@ def test_no_email_message_names_the_missing_input(tmp_path):
     api = _FakeAPI()
     _escalate(_cfg({}, tmp_path), api)
     assert "no email configured" in api.comments[0][1]
+
+
+def test_budget_spike_escalation_uses_budget_card_not_approve(tmp_path):
+    # End-to-end: a DAILY_COST_SPIKE routes to the budget card — Increase limit +
+    # Open PR, NEVER Approve/Approve&Merge (the bot stopped on money, not a review).
+    from scripts.dispatcher.escalation import EscalationTrigger
+
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/StockTrader",
+        "GITHUB_REPOSITORY_OWNER": "NFS-247",
+        # approve web app IS configured — proving the budget card omits Approve by
+        # choice, not just because no approve URL was available.
+        "APPROVE_WEBAPP_URL": "https://script.google.com/macros/s/AB/exec",
+    }, tmp_path)
+    sent = {}
+
+    with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
+        main._send_escalation(
+            cfg=cfg, api=_FakeAPI(), pr_number=133,
+            pr_url="https://github.com/NFS-247/StockTrader/pull/133", pr_title="T",
+            tier="high_stakes", branch="f/x", head_sha="abc1234",
+            reason_short="24-hour dispatcher spend ceiling reached", detail="d",
+            reviewer_summaries={}, ci_status=CIStatus.SUCCESS,
+            diff_summary="+1-0", workflow_run_url="http://run",
+            spend_breakdown={"claude": 13.11, "gpt": 1.86, "gemini": 0.71},
+            spent_usd=15.68,
+            trigger=EscalationTrigger.DAILY_COST_SPIKE.value,
+        )
+
+    section = sent["card"]["cardsV2"][0]["card"]["sections"][0]
+    buttons = section["widgets"][1]["buttonList"]["buttons"]
+    texts = [b["text"] for b in buttons]
+    assert "Approve" not in " ".join(texts)          # the fix
+    assert "💵 Increase limit" in texts
+    assert any(
+        "NFS-247/StockTrader/edit" in b["onClick"]["openLink"]["url"]
+        for b in buttons if "Increase" in b["text"]
+    )
