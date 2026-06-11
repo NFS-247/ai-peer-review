@@ -24,15 +24,15 @@ class FakeRead:
     """A board: PR #114 escalated, PR #200 still reviewing."""
 
     def list_open_pulls(self, repo):
+        # Labels ride on the pulls payload (as the real GitHub API returns them);
+        # _gather reads them from here, not via a separate list_labels call.
         return [
-            {"number": 114, "title": "Phase 4a", "html_url": "http://x/114", "updated_at": "t"},
-            {"number": 200, "title": "WIP refactor", "html_url": "http://x/200", "updated_at": "t"},
+            {"number": 114, "title": "Phase 4a", "html_url": "http://x/114", "updated_at": "t",
+             "labels": [{"name": "dispatcher:tier-high_stakes"},
+                        {"name": "dispatcher:round-10"}, {"name": "dispatcher:escalated"}]},
+            {"number": 200, "title": "WIP refactor", "html_url": "http://x/200", "updated_at": "t",
+             "labels": [{"name": "dispatcher:tier-backend"}, {"name": "dispatcher:round-2"}]},
         ]
-
-    def list_labels(self, repo, number):
-        if number == 114:
-            return ["dispatcher:tier-high_stakes", "dispatcher:round-10", "dispatcher:escalated"]
-        return ["dispatcher:tier-backend", "dispatcher:round-2"]
 
     def list_issue_comments(self, repo, number):
         return [_state_comment(5.8)] if number == 114 else []
@@ -64,6 +64,7 @@ def test_board_renders_projects_and_spend():
     assert REPO in r.body
     assert "Phase 4a" in r.body and "WIP refactor" in r.body
     assert "$5.80" in r.body  # 24h spend / cost
+    assert "not cryptographically verified" in r.body  # trust caveat on displayed data
 
 
 def test_inbox_shows_only_actionable():
@@ -71,6 +72,7 @@ def test_inbox_shows_only_actionable():
     assert r.status == 200
     assert "#114" in r.body          # escalated -> actionable
     assert "WIP refactor" not in r.body  # reviewing -> not in inbox
+    assert "not cryptographically verified" in r.body  # trust caveat at the decision point
 
 
 def test_action_posts_operator_command_as_operator():
@@ -131,4 +133,4 @@ def test_board_isolates_a_failing_repo():
     assert r.status == 200                      # the page still renders
     assert "Phase 4a" in r.body                 # the healthy repo's PRs show
     assert "Couldn't read this repo" in r.body  # the bad repo shows an error, not a 500
-    assert "HTTP 404" in r.body
+    assert "HTTP 404" not in r.body             # but the raw detail is NOT leaked to the page

@@ -50,14 +50,20 @@ def sign_action(secret: str, *, repo: str, pr_number: int, action: str) -> str:
 
 
 def approve_url(
-    base_url: str, *, repo: str, pr_number: int, action: str = "approve", signing_secret: str = ""
+    base_url: str, *, repo: str, pr_number: int, action: str = "approve", signing_secret: str
 ) -> str:
-    """Signed one-tap approve/approve_merge link (returns '' without a base)."""
+    """Signed one-tap approve/approve_merge link (returns '' without a base).
+
+    ``signing_secret`` is required (keyword, no default) and must be non-empty:
+    an unsigned approve link is a privilege-escalation footgun, so a missing
+    secret raises rather than silently emitting a URL with no ``sig``.
+    """
     if not base_url:
         return ""
+    if not signing_secret:
+        raise ValueError("approve_url requires a non-empty signing_secret (refusing to emit an unsigned link)")
     params = {"repo": repo, "pr": pr_number, "action": action}
-    if signing_secret:
-        params["sig"] = sign_action(signing_secret, repo=repo, pr_number=pr_number, action=action)
+    params["sig"] = sign_action(signing_secret, repo=repo, pr_number=pr_number, action=action)
     sep = "&" if "?" in base_url else "?"
     return f"{base_url}{sep}{urllib.parse.urlencode(params)}"
 

@@ -3,6 +3,7 @@
 import io
 import json
 from unittest import mock
+from urllib.parse import parse_qs, urlparse
 
 from front_door.app import gh
 
@@ -45,6 +46,25 @@ def test_post_issue_comment_sends_auth_and_body():
     assert captured["url"].endswith("/repos/o/r/issues/114/comments")
     assert captured["auth"] == "Bearer optoken"        # operator identity
     assert captured["body"] == {"body": "OPERATOR APPROVE"}
+
+
+def test_list_open_pulls_paginates_until_short_page():
+    # Page 1 is full (100) so the client must fetch page 2; page 2 is short so it
+    # stops. A naive per_page=100-only read would have missed the page-2 PRs.
+    pages = {1: [{"number": i} for i in range(100)],
+             2: [{"number": 100}, {"number": 101}]}
+    seen = []
+
+    def fake_urlopen(req, timeout=0):
+        q = parse_qs(urlparse(req.full_url).query)
+        page = int(q.get("page", ["1"])[0])
+        seen.append(page)
+        return _Resp(pages.get(page, []))
+
+    with mock.patch.object(gh.urllib.request, "urlopen", fake_urlopen):
+        pulls = gh.GitHub("t").list_open_pulls("o/r")
+    assert [p["number"] for p in pulls] == list(range(102))
+    assert seen == [1, 2]  # stopped after the short page, didn't loop forever
 
 
 def test_find_issue_body_by_marker_skips_prs():

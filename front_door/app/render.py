@@ -112,7 +112,10 @@ def board_page(views: "list[RepoView]", *, signed_in: bool = False) -> str:
             f"<div class='card'><h2><span>{escape(v.repo)} {_health(v.rows)}</span>"
             f"{_spend_line(v.spend)}</h2>{row_html}</div>"
         )
-    return _layout("Projects", "".join(cards), signed_in=signed_in, refresh=30)
+    footnote = ("<div class='meta' style='margin:8px 2px'>Verdicts and cost are read "
+                "from PR comments for display and are not cryptographically verified — "
+                "confirm on the PR before acting.</div>")
+    return _layout("Projects", "".join(cards) + footnote, signed_in=signed_in, refresh=30)
 
 
 def _health(rows: "list[BoardRow]") -> str:
@@ -148,7 +151,9 @@ def inbox_page(items: "Iterable[InboxItem]", *, signed_in: bool = False, csrf: s
                        "Nothing waiting on you. 🎉</div></div>", signed_in=signed_in, refresh=30)
     rows = "".join(_inbox_row(it, csrf) for it in items)
     note = ("<div class='note'>Actions post an <b>OPERATOR</b> command as you. "
-            "Approve marks the PR ready — you still click merge on GitHub.</div>")
+            "Approve marks the PR ready — you still click merge on GitHub.<br>"
+            "⚠ Reviewer verdicts and cost below are read from PR comments and are "
+            "<b>not cryptographically verified</b> here — confirm on the PR before approving.</div>")
     return _layout("Approvals", note + f"<div class='card'>{rows}</div>",
                    signed_in=signed_in, refresh=30)
 

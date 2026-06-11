@@ -47,24 +47,39 @@ class GitHub:
             raise GitHubError(f"GitHub {method} {path} failed: {exc.reason}") from exc
         return json.loads(raw) if raw else None
 
+    def _paginate(self, path: str, *, per_page: int = 100, max_pages: int = 20) -> list:
+        """Follow page=1.. until a short/empty page (no Link-header parsing
+        needed). ``max_pages`` caps the walk so a misbehaving endpoint can't loop
+        forever; 20*100 = 2000 items is ample for a board read."""
+        sep = "&" if "?" in path else "?"
+        out: list = []
+        for page in range(1, max_pages + 1):
+            chunk = self._request("GET", f"{path}{sep}per_page={per_page}&page={page}")
+            if not isinstance(chunk, list) or not chunk:
+                break
+            out.extend(chunk)
+            if len(chunk) < per_page:
+                break
+        return out
+
     # ---- reads --------------------------------------------------------------
     def authenticated_login(self) -> str:
         data = self._request("GET", "/user") or {}
         return data.get("login", "")
 
     def list_open_pulls(self, repo: str) -> list[dict]:
-        return self._request("GET", f"/repos/{repo}/pulls?state=open&per_page=100") or []
+        return self._paginate(f"/repos/{repo}/pulls?state=open")
 
     def list_labels(self, repo: str, number: int) -> list[str]:
-        data = self._request("GET", f"/repos/{repo}/issues/{number}/labels?per_page=100") or []
+        data = self._paginate(f"/repos/{repo}/issues/{number}/labels")
         return [l.get("name", "") for l in data]
 
     def list_issue_comments(self, repo: str, number: int) -> list[dict]:
-        return self._request("GET", f"/repos/{repo}/issues/{number}/comments?per_page=100") or []
+        return self._paginate(f"/repos/{repo}/issues/{number}/comments")
 
     def list_open_issues(self, repo: str) -> list[dict]:
         # issues endpoint also returns PRs; filter to true issues by caller need.
-        return self._request("GET", f"/repos/{repo}/issues?state=open&per_page=100") or []
+        return self._paginate(f"/repos/{repo}/issues?state=open")
 
     def find_issue_body_by_marker(self, repo: str, marker: str) -> str:
         """Body of the first open issue whose body contains ``marker`` (else '')."""

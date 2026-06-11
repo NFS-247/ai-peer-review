@@ -45,6 +45,20 @@ def test_oauth_state_is_one_shot_and_expires():
     assert s.consume_state(None) is False
 
 
+def test_states_are_bounded_under_flood():
+    # An unauthenticated attacker can hammer /login (each mints a state); the
+    # store must stay bounded and keep the newest, shedding the oldest.
+    clock = {"t": 1000.0}
+    s = SessionStore(now=lambda: clock["t"], state_ttl_seconds=10_000, max_states=3)
+    issued = []
+    for _ in range(10):
+        issued.append(s.new_state())
+        clock["t"] += 1  # distinct expiries so eviction order is deterministic
+    assert len(s._states) <= 3            # bounded, not 10
+    assert issued[-1] in s._states        # newest kept
+    assert issued[0] not in s._states     # oldest evicted
+
+
 # ---- oauth ------------------------------------------------------------------
 def test_authorize_url_carries_state_and_scope():
     o = oauth_mod.OAuth("cid", "secret", scope="repo")

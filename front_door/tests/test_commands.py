@@ -37,7 +37,17 @@ def test_sign_action_binds_to_pr_and_action():
 
 
 def test_approve_url():
-    assert cmd.approve_url("", repo="R", pr_number=1) == ""
+    # No base URL -> empty, regardless of secret.
+    assert cmd.approve_url("", repo="R", pr_number=1, signing_secret="") == ""
     u = cmd.approve_url("https://x/exec", repo="R", pr_number=1, signing_secret="k")
     assert u.startswith("https://x/exec?")
     assert "repo=R" in u and "pr=1" in u and "action=approve" in u and "sig=" in u
+
+
+def test_approve_url_refuses_unsigned():
+    # A base URL with no secret is a silent-downgrade footgun -> must raise.
+    try:
+        cmd.approve_url("https://x/exec", repo="R", pr_number=1, signing_secret="")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass

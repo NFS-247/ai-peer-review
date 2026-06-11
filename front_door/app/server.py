@@ -24,16 +24,18 @@ from .sessions import SID_COOKIE, SessionStore
 def _operator_client_factory(cfg, sessions):
     """Return ``(cookies) -> operator GitHub client | None``.
 
-    Prefer the OAuth session token (the user's own identity); fall back to the
-    dev operator token for local dev. None when neither exists -> the router
-    asks the user to sign in.
+    Prefer the OAuth session token (the user's own identity). The dev operator
+    token is a LOCAL-DEV-ONLY fallback and is refused whenever OAuth is
+    configured: otherwise a misconfigured prod (dev token left set) would let an
+    unauthenticated, CSRF-free request act as the dev identity. None when neither
+    applies -> the router asks the user to sign in.
     """
     def factory(cookies: dict):
         if sessions is not None:
             token = sessions.token_for(cookies.get(SID_COOKIE))
             if token:
                 return GitHub(token, api_base=cfg.api_base)
-        if cfg.dev_operator_token:
+        if cfg.dev_operator_token and not cfg.oauth_enabled():
             return GitHub(cfg.dev_operator_token, api_base=cfg.api_base)
         return None
     return factory
@@ -101,8 +103,16 @@ class _Handler(BaseHTTPRequestHandler):
 
 def serve(cfg) -> None:
     _Handler.cfg = cfg
-    _Handler.sessions = SessionStore()
-    _Handler.oauth = OAuth(cfg.oauth_client_id, cfg.oauth_client_secret, scope=cfg.oauth_scope)
+    # The session layer exists ONLY in OAuth mode. Its presence is what makes the
+    # router require CSRF on writes, so creating it in dev-token/read-only mode
+    # would muddy that signal. In dev-token mode there is no session to bind a
+    # CSRF token to (single local user); in read-only mode there are no writes.
+    if cfg.oauth_enabled():
+        _Handler.sessions = SessionStore()
+        _Handler.oauth = OAuth(cfg.oauth_client_id, cfg.oauth_client_secret, scope=cfg.oauth_scope)
+    else:
+        _Handler.sessions = None
+        _Handler.oauth = None
     httpd = ThreadingHTTPServer((cfg.host, cfg.port), _Handler)
     mode = "OAuth" if cfg.oauth_enabled() else ("dev-token" if cfg.dev_operator_token else "read-only")
     print(f"Front Door on http://{cfg.host}:{cfg.port}  "

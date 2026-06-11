@@ -15,12 +15,13 @@ used and CSRF is skipped (local single-user dev).
 from __future__ import annotations
 
 import secrets
+import sys
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from . import render
 from .commands import VALID_ACTIONS, command_body
-from .sessions import SID_COOKIE
+from .sessions import SID_COOKIE, STATE_COOKIE
 from .viewmodels import (
     GLOBAL_SPEND_MARKER,
     ProjectSpend,
@@ -91,15 +92,23 @@ def _gather(deps: Deps) -> "list[RepoView]":
             rows = []
             for pr in deps.read.list_open_pulls(repo):
                 n = int(pr.get("number", 0))
-                labels = deps.read.list_labels(repo, n)
+                # Labels come back on the pulls payload itself — no extra per-PR
+                # request (the list endpoint already includes them).
+                labels = [l.get("name", "") for l in (pr.get("labels") or [])
+                          if isinstance(l, dict)]
                 comments = deps.read.list_issue_comments(repo, n)
                 rows.append(build_board_row(repo=repo, pr=pr, labels=labels, comments=comments))
             ledger = deps.read.find_issue_body_by_marker(repo, GLOBAL_SPEND_MARKER)
             total, by = spend_from_ledger(ledger, now_ts=deps.now_ts)
             views.append(RepoView(repo, rows, ProjectSpend(repo, total, by)))
         except Exception as exc:  # noqa: BLE001 - isolate per-repo failures
+            # Log the detail server-side; show the user a generic message so a
+            # GitHub error body (which could echo request data) never reaches
+            # the page.
+            print(f"front_door: failed to read {repo}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
             views.append(RepoView(repo, [], ProjectSpend(repo, 0.0, {}),
-                                  error=f"{type(exc).__name__}: {exc}"))
+                                  error="could not be read (see server logs)"))
     return views
 
 
@@ -130,7 +139,7 @@ def route(method: str, path: str, *, cookies: dict, form: dict, deps: Deps,
         return _handle_login(deps)
 
     if method == "GET" and path == "/auth/callback":
-        return _handle_callback(deps=deps, query=query)
+        return _handle_callback(deps=deps, cookies=cookies, query=query)
 
     if method == "GET" and path == "/logout":
         if deps.sessions:
@@ -154,14 +163,27 @@ def _handle_login(deps: Deps) -> Response:
             "<code>FRONT_DOOR_PUBLIC_URL</code> to enable GitHub sign-in."))
     state = deps.sessions.new_state()
     url = oauth.authorize_url(state=state, redirect_uri=deps.cfg.redirect_uri())
-    return Response(303, "", headers={"Location": url})
+    # Bind the state to THIS browser via an httponly cookie; the callback must
+    # present a matching cookie. Without this, a globally-valid state lets an
+    # attacker complete the callback in a victim's browser (login-CSRF).
+    return Response(303, "", headers={
+        "Location": url,
+        "Set-Cookie": _set_cookie(STATE_COOKIE, state, max_age=600, secure=_secure(deps.cfg)),
+    })
 
 
-def _handle_callback(*, deps: Deps, query: dict) -> Response:
+def _handle_callback(*, deps: Deps, cookies: dict, query: dict) -> Response:
     if not (deps.oauth and deps.sessions):
         return Response(400, render.message_page("Sign in", "OAuth not enabled."))
-    if not deps.sessions.consume_state(query.get("state")):
-        # Forged/expired/replayed state -> reject (CSRF on the handshake).
+    state = query.get("state") or ""
+    cookie_state = cookies.get(STATE_COOKIE) or ""
+    # Browser-binding: the state in the URL must match the state cookie set at
+    # /login AND be a live one-shot server-side state. The cookie match defeats
+    # login-CSRF / state-fixation (an attacker's state lives in the attacker's
+    # cookie, not the victim's); consume_state defeats replay/forgery.
+    if not state or not cookie_state or not secrets.compare_digest(state, cookie_state):
+        return Response(400, render.message_page("Sign in failed", "Invalid or expired state."))
+    if not deps.sessions.consume_state(state):
         return Response(400, render.message_page("Sign in failed", "Invalid or expired state."))
     code = (query.get("code") or "").strip()
     if not code:
@@ -172,6 +194,8 @@ def _handle_callback(*, deps: Deps, query: dict) -> Response:
         return Response(502, render.message_page(
             "Sign in failed", f"Token exchange failed: {type(exc).__name__}."))
     sid, _csrf = deps.sessions.create(token)
+    # The state cookie is now spent server-side; it is overwritten on the next
+    # /login and harmless until its short Max-Age lapses.
     return Response(303, "", headers={
         "Location": "/",
         "Set-Cookie": _set_cookie(SID_COOKIE, sid, max_age=8 * 3600, secure=_secure(deps.cfg)),
@@ -179,11 +203,20 @@ def _handle_callback(*, deps: Deps, query: dict) -> Response:
 
 
 def _csrf_ok(deps: Deps, cookies: dict, form: dict) -> bool:
-    """Valid iff there is no session layer/session (dev mode) OR the form's csrf
-    matches the session's. Prevents a cross-site POST from acting as the user."""
+    """CSRF policy for writes.
+
+    Dev mode (no session layer at all): skip — there is no session to bind a
+    token to, and writes use the local dev token only. OAuth mode (session layer
+    present): ALWAYS require a valid CSRF token that matches the caller's
+    session. A request with no session must fail closed here — otherwise "no
+    session" would be a CSRF bypass, which combined with any operator client is a
+    cross-site write hole.
+    """
+    if deps.sessions is None:
+        return True  # dev/read-only mode — no session layer
     expected = _session_csrf(deps, cookies)
-    if expected is None:
-        return True  # dev/no-session mode — nothing to bind a token to
+    if not expected:
+        return False  # session layer exists but caller has no session -> reject
     return secrets.compare_digest(form.get("csrf", ""), expected)
 
 

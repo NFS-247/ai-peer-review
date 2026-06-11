@@ -2,7 +2,14 @@
 
 from front_door.app import config as config_mod
 from front_door.app.router import Deps, route
-from front_door.app.sessions import SID_COOKIE, SessionStore
+from front_door.app.sessions import SID_COOKIE, STATE_COOKIE, SessionStore
+
+
+def _state_cookie_value(resp) -> str:
+    """Pull the fd_oauth_state value out of a /login response's Set-Cookie."""
+    sc = resp.headers["Set-Cookie"]
+    assert sc.startswith(f"{STATE_COOKIE}=")
+    return sc.split(";")[0].split("=", 1)[1]
 
 REPO = "NFS-247/StockTrader"
 
@@ -67,6 +74,9 @@ def test_login_redirects_to_github_with_state():
     assert "state=" in r.headers["Location"]
     # redirect_uri is built from public_base_url
     assert "app.example/auth/callback" in r.headers["Location"]
+    # state is also pinned to the browser via an httponly, Secure (https) cookie
+    sc = r.headers["Set-Cookie"]
+    assert sc.startswith(f"{STATE_COOKIE}=") and "HttpOnly" in sc and "Secure" in sc
 
 
 def test_login_dev_message_when_oauth_unconfigured():
@@ -81,8 +91,12 @@ def test_login_dev_message_when_oauth_unconfigured():
 def test_callback_exchanges_code_and_sets_session_cookie():
     s = SessionStore()
     deps, _ = _deps(s, FakeOAuth(token="ghp_live"))
-    state = s.new_state()  # as /login would have created
-    r = route("GET", "/auth/callback", cookies={}, form={},
+    # Full flow: /login mints the state + sets the binding cookie; the browser
+    # echoes both back on the callback.
+    login = route("GET", "/login", cookies={}, form={}, deps=deps)
+    state = login.headers["Location"].split("state=")[1].split("&")[0]
+    cookie_val = _state_cookie_value(login)
+    r = route("GET", "/auth/callback", cookies={STATE_COOKIE: cookie_val}, form={},
               deps=deps, query={"code": "abc", "state": state})
     assert r.status == 303 and r.headers["Location"] == "/"
     set_cookie = r.headers["Set-Cookie"]
@@ -99,6 +113,21 @@ def test_callback_rejects_bad_state():
     r = route("GET", "/auth/callback", cookies={}, form={},
               deps=deps, query={"code": "abc", "state": "forged"})
     assert r.status == 400 and "Invalid or expired state" in r.body
+
+
+def test_callback_rejects_state_not_bound_to_this_browser():
+    """Login-CSRF guard: a server-valid state with NO matching browser cookie is
+    rejected, so an attacker can't complete the callback in a victim's browser."""
+    s = SessionStore()
+    deps, op = _deps(s, FakeOAuth())
+    state = s.new_state()  # a live, server-valid state (e.g. minted by the attacker)
+    # Victim's browser has no fd_oauth_state cookie (or a different one).
+    r = route("GET", "/auth/callback", cookies={}, form={},
+              deps=deps, query={"code": "abc", "state": state})
+    assert r.status == 400 and "Invalid or expired state" in r.body
+    r2 = route("GET", "/auth/callback", cookies={STATE_COOKIE: "different"}, form={},
+               deps=deps, query={"code": "abc", "state": state})
+    assert r2.status == 400
 
 
 # ---- CSRF on actions --------------------------------------------------------
@@ -123,6 +152,18 @@ def test_action_requires_csrf_when_session_present():
               form={"repo": REPO, "number": "114", "action": "approve", "csrf": csrf}, deps=deps)
     assert r.status == 303
     assert op.posted == [(REPO, 114, "OPERATOR APPROVE")]
+
+
+def test_action_without_session_is_rejected_in_oauth_mode():
+    """The critical bypass: in OAuth mode a request with no session must NOT act.
+    _csrf_ok fails closed when the session layer exists but the caller has none,
+    so an unauthenticated cross-site POST never reaches the operator client."""
+    s = SessionStore()
+    deps, op = _deps(s, FakeOAuth())  # session layer present, but request has no sid
+    r = route("POST", "/action", cookies={},
+              form={"repo": REPO, "number": "114", "action": "approve", "csrf": "anything"},
+              deps=deps)
+    assert r.status == 403 and op.posted == []
 
 
 def test_logout_clears_cookie_and_session():
