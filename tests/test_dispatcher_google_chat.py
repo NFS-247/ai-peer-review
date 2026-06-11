@@ -418,3 +418,84 @@ def test_config_loads_approve_url_from_env():
     })
     assert cfg.approve_webapp_url == "https://script.google.com/macros/s/AB/exec"
     assert cfg.approve_signing_secret == "sec"
+
+
+def test_escalation_card_plain_lead_and_clean_subtitle_with_trigger():
+    # With the trigger, the card leads with a human sentence and drops the engine
+    # jargon from the subtitle (the operator's complaint: "a required reviewer
+    # could not be reached" meant nothing to them).
+    card = gc.build_escalation_card(
+        project_name="NFS Central", pr_number=95, pr_url="http://x/95",
+        pr_title="Vendor Intelligence: sourcing board", tier="high_stakes",
+        reason_short="a required reviewer could not be reached",
+        reviewer_summaries={"gemini": "API failure this round"},
+        trigger="required_reviewer_unavailable",
+    )
+    c = card["cardsV2"][0]["card"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "didn't answer this round" in text                       # plain lead
+    assert "a required reviewer could not be reached" not in text   # jargon gone from body
+    assert c["header"]["subtitle"] == "tier: high_stakes"           # and from subtitle
+
+
+def test_escalation_card_keeps_literal_reason_without_trigger():
+    # Back-compat: callers that don't pass a trigger keep the old "Why: <reason>"
+    # body + the reason in the subtitle, unchanged.
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="t",
+        tier="backend", reason_short="CI is persistently failing",
+        reviewer_summaries={},
+    )
+    c = card["cardsV2"][0]["card"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "<b>Why:</b> CI is persistently failing" in text
+    assert c["header"]["subtitle"] == "tier: backend · CI is persistently failing"
+
+
+def test_escalation_card_unknown_trigger_keeps_literal_reason():
+    # An UNRECOGNIZED trigger must NOT hide the precise reason behind a generic
+    # fallback — keep the literal "Why: <reason>" body + reason in the subtitle so
+    # an unexpected state keeps its diagnostics (gpt's review note).
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="t",
+        tier="backend", reason_short="something unexpected happened",
+        reviewer_summaries={}, trigger="not_a_real_trigger",
+    )
+    c = card["cardsV2"][0]["card"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "<b>Why:</b> something unexpected happened" in text
+    assert c["header"]["subtitle"] == "tier: backend · something unexpected happened"
+
+
+def test_escalation_card_links_to_down_reviewers_provider_console():
+    # The button that makes sense when an AI is down is a jump straight to THAT
+    # provider's console — gemini -> AI Studio — placed before "Open PR".
+    card = gc.build_escalation_card(
+        project_name="NFS Central", pr_number=95, pr_url="http://x/95",
+        pr_title="t", tier="high_stakes",
+        reason_short="a required reviewer could not be reached",
+        reviewer_summaries={"gemini": "API failure this round"},
+        trigger="required_reviewer_unavailable",
+        unavailable_reviewers=("gemini",),
+    )
+    buttons = card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+    assert [b["text"] for b in buttons] == ["🔧 Check Gemini (AI Studio)", "Open PR #95"]
+    assert buttons[0]["onClick"]["openLink"]["url"] == "https://aistudio.google.com/"
+
+
+def test_escalation_card_skips_unknown_provider_button():
+    # An unrecognized reviewer name gets NO button (never a wrong link), just Open PR.
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="t",
+        tier="high_stakes", reason_short="r", reviewer_summaries={},
+        trigger="required_reviewer_unavailable", unavailable_reviewers=("mystery-bot",),
+    )
+    texts = [b["text"] for b in
+             card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert texts == ["Open PR #1"]
+
+
+def test_plain_escalation_lead_known_and_unknown():
+    assert "protected files" in gc.plain_escalation_lead("high_stakes_auto")
+    # blank or unknown both resolve to the same safe fallback
+    assert gc.plain_escalation_lead("") == gc.plain_escalation_lead("nope")

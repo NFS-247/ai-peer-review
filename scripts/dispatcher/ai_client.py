@@ -25,6 +25,18 @@ from typing import Optional
 # been partially processed, so a blind retry could double-charge.
 RETRYABLE_STATUS = frozenset({429, 503})
 
+# Read window for a single REVIEWER call, in seconds. The reviewer clients pass
+# this EXPLICITLY (claude/gemini below; gpt via its own env-configurable default
+# of the same value), so the longer window is scoped to reviews —
+# request_json_with_retry keeps a conservative 120s default for any other/
+# incidental caller (fail-fast preserved). Generous on purpose: a large diff can
+# take minutes to review, and too short a window reports a slow-but-healthy
+# reviewer as "unavailable" (the live gemini/gpt "could not be reached" pings on
+# big diffs); the old 120s left claude/gemini far tighter than gpt's 300s. A read
+# timeout consumes the SEPARATE single-shot timeout_retries budget (0 for these
+# callers), so this is ONE bounded read per reviewer — never 300s × max_attempts.
+REVIEWER_READ_TIMEOUT = 300
+
 
 def _retry_after_seconds(exc: urllib.error.HTTPError) -> Optional[float]:
     """Parse a Retry-After header (seconds form) if the provider sent one."""
@@ -179,4 +191,10 @@ class AIClient(ABC):
         ...
 
 
-__all__ = ["AIResponse", "AIClient", "request_json_with_retry", "RETRYABLE_STATUS"]
+__all__ = [
+    "AIResponse",
+    "AIClient",
+    "request_json_with_retry",
+    "RETRYABLE_STATUS",
+    "REVIEWER_READ_TIMEOUT",
+]

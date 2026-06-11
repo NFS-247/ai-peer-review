@@ -39,6 +39,28 @@ def test_succeeds_first_try():
     assert slept == []  # no backoff needed
 
 
+def test_reviewer_timeout_is_explicit_and_default_stays_fail_fast():
+    # The reviewer read window is 300s and the reviewer clients pass it EXPLICITLY,
+    # so request_json_with_retry's own default stays a conservative 120s — an
+    # incidental non-reviewer caller keeps fail-fast behaviour (gpt's review note).
+    # A read timeout uses the single-shot timeout_retries budget (0 here), so the
+    # 300s is ONE bounded read, never 300s x max_attempts.
+    assert A.REVIEWER_READ_TIMEOUT == 300
+    seen = {}
+
+    def fake_urlopen(req, timeout=0):
+        seen["timeout"] = timeout
+        return _Resp()
+
+    with mock.patch.object(A.urllib.request, "urlopen", fake_urlopen):
+        A.request_json_with_retry(object(), provider="X")              # no timeout arg
+    assert seen["timeout"] == 120                                      # fail-fast default
+
+    with mock.patch.object(A.urllib.request, "urlopen", fake_urlopen):
+        A.request_json_with_retry(object(), provider="gemini", timeout=A.REVIEWER_READ_TIMEOUT)
+    assert seen["timeout"] == 300                                      # reviewer window
+
+
 def test_retries_429_then_succeeds():
     calls = []
     slept = []

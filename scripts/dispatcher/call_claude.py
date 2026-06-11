@@ -15,7 +15,7 @@ import json
 import os
 import urllib.request
 
-from .ai_client import AIClient, AIResponse, request_json_with_retry
+from .ai_client import AIClient, AIResponse, REVIEWER_READ_TIMEOUT, request_json_with_retry
 from .pricing import token_cost
 
 
@@ -49,7 +49,15 @@ class ClaudeClient(AIClient):
                 "anthropic-version": "2023-06-01",
             },
         )
-        payload = request_json_with_retry(req, provider="Anthropic")
+        # timeout_retries=0 is explicit, not just the default: a reviewer read
+        # timeout must never be retried — there's no idempotency key here, so a
+        # retry could double-bill if the model already produced the (lost) reply.
+        payload = request_json_with_retry(
+            req,
+            provider="Anthropic",
+            timeout=REVIEWER_READ_TIMEOUT,
+            timeout_retries=0,
+        )
 
         text = ""
         for block in payload.get("content", []):
