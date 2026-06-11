@@ -81,6 +81,52 @@ All are engine changes → ship via a deliberate `@v2` release (see next item).
 
 ---
 
+## P1 — Context-aware Chat escalation cards + per-user webhooks · [ai-peer-review]
+
+**Operator-requested (this session).** Core principle: **the buttons on a Chat
+card must match what the card is about.** Today every escalation posts the same
+Approve / Approve&Merge card — wrong when the bot stopped on *money*, or is
+*stuck*, not when it's waiting on an approval. Operator's words: "if it's
+financial it should say increase or stay; if it's approving, approve & merge; if
+it's 'what's going on', the buttons for that." And: you only get a ping when a PR
+**converges**, so when reviewers **deadlock you get silence and sit there doing
+nothing.**
+
+Card variants (layout + buttons driven by the escalation trigger):
+- **Budget / 24h ceiling hit (`DAILY_COST_SPIKE`)** — show the 24h spend
+  breakdown (the proof) + **Increase limit (tap to pick the amount)** + **Stay /
+  keep paused** + **Open PR**. Drop Approve/Approve&Merge. The increase is
+  **one-tap**: posts a new `OPERATOR INCREASE <amount>` that sets a *persisted*
+  ceiling override (bounded — a leaked link can't set it to ∞) **and auto-resumes**
+  the dispatcher, so the operator never types anything into GitHub.
+- **Ready to merge** (converged, or head-lock sign-off) — Approve & mark ready +
+  Open PR. *(exists today.)*
+- **Stuck / reviewers can't converge** — the missing ping. Say *what's* stuck
+  (which reviewer is blocking and why — e.g. "Gemini blocking on X; Claude+GPT
+  disagree, possible hallucination") with buttons to settle it: **Approve & mark
+  ready** / **Send back with a note** / **Open PR**. Invariant: every PR ends in
+  *merged* OR *an actionable ping* — never silent.
+- **Reviewer red flag** — let a reviewer raise "human, look now" (a severe finding
+  or sharp disagreement) that pings chat regardless of the mechanical triggers.
+  *Open Q:* any single reviewer, or only on a split? (noise control.)
+
+**Per-user webhook settings (front-door UI).** Each operator configures their
+*own* webhook + type (Google Chat / Slack / Discord / generic) in the front door,
+instead of one baked-in org secret — portable across users/tenants.
+
+**Where it lives:** engine = per-trigger card builders in `call_google_chat.py`,
+a new `OPERATOR INCREASE` (`parse_reply` + `main` + a persisted ceiling override
+in `global_state`), and richer disagreement detail in the escalation. Front door
+= the webhook-settings page + the chat-approve Apps Script handler for the new
+button actions — lands once the front door (PR #1) is on `main`.
+
+**Check first (may already work):** if stuck-escalations aren't reaching the
+operator today, it's usually (a) no chat webhook on that repo (so it went to
+email / a PR comment), or (b) the ping is deferred until the author stops pushing.
+Verify before building.
+
+---
+
 ## P2 — Auto-enroll candidates that pass the OOS gate · [StockTrader]
 
 Currently a **manual POST**. Automate enrollment once a candidate passes the
