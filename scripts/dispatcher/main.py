@@ -37,6 +37,7 @@ from .call_google_chat import (
     build_approve_url,
     build_budget_escalation_card,
     build_budget_warning_card,
+    build_disagreement_card,
     build_escalation_card,
     build_increase_limit_url,
     build_ready_card,
@@ -45,6 +46,7 @@ from .call_google_chat import (
 from .email_send import DEFAULT_FROM, EmailMessage, ResendClient, build_escalation_email
 from .escalation import (
     COOLDOWN_GATED_TRIGGERS,
+    DISAGREEMENT_TRIGGERS,
     EscalationTrigger,
     cooldown_elapsed,
     decide_escalation,
@@ -369,6 +371,27 @@ def _send_escalation(
                         f"{cfg.repo_owner}/{cfg.repo_name}"
                     ),
                     pr_title=pr_title,
+                )
+            elif trigger in DISAGREEMENT_TRIGGERS:
+                # Reviewers ran but couldn't converge — the PR WAS reviewed and the
+                # panel is split. Show the split + Approve-to-override / Open PR.
+                # Approve is a legitimate operator override here (unlike a budget
+                # stop, where reviews may not have run at all).
+                card = build_disagreement_card(
+                    project_name=cfg.project_name,
+                    pr_number=pr_number,
+                    pr_url=pr_url,
+                    pr_title=pr_title,
+                    tier=tier,
+                    reason_short=reason_short,
+                    reviewer_summaries=reviewer_summaries,
+                    approve_url=build_approve_url(
+                        cfg.approve_webapp_url or "",
+                        repo=cfg.repo_name,
+                        pr_number=pr_number,
+                        action="approve",
+                        signing_secret=cfg.approve_signing_secret or "",
+                    ),
                 )
             else:
                 card = build_escalation_card(

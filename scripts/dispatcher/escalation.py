@@ -51,6 +51,20 @@ COOLDOWN_GATED_TRIGGERS = frozenset({
 })
 
 
+# "The reviewers ran but couldn't converge" — the PR WAS reviewed and the panel is
+# split or stuck, so the operator must break the tie. These route to the
+# disagreement Chat card (which shows the split + Approve-to-override / Open PR),
+# distinct from a budget stop (DAILY_COST_SPIKE) where reviews may not have run.
+# COST_SPIKE belongs here, not with budget: it only fires when not-converged AND
+# reviews have already run (the spend IS the reviews) — see decide_escalation.
+DISAGREEMENT_TRIGGERS = frozenset({
+    EscalationTrigger.HARD_ROUND_CAP,
+    EscalationTrigger.DISAGREEMENT_AFTER_BUDGET,
+    EscalationTrigger.HIGH_STAKES_FIRST_DISSENT,
+    EscalationTrigger.COST_SPIKE,
+})
+
+
 # Head-lock paths are PROJECT-SPECIFIC (e.g. a trading system's broker/safety/
 # promotion modules that must get explicit operator sign-off before merge even
 # when the AI reviewers converge). They live in the repo's .peer-review.json
@@ -226,5 +240,6 @@ __all__ = [
     "decide_escalation",
     "HEAD_LOCK_PATH_PATTERNS",
     "COOLDOWN_GATED_TRIGGERS",
+    "DISAGREEMENT_TRIGGERS",
     "cooldown_elapsed",
 ]
