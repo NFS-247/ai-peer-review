@@ -31,24 +31,31 @@ MODEL_ENV = "OPENAI_MODEL"
 # timeout-retry in ``request_json_with_retry`` this keeps a slow-but-healthy
 # generation from taking a required reviewer offline for the round.
 DEFAULT_READ_TIMEOUT = 300
+# Upper bound so a misconfigured secret (e.g. hours) can't stall a round and
+# delay escalations; an override above this is clamped down to it.
+MAX_READ_TIMEOUT = 600
 READ_TIMEOUT_ENV = "OPENAI_READ_TIMEOUT"
 
 
 def _resolve_read_timeout() -> int:
-    """Resolve the OpenAI read timeout (seconds): env override > default.
+    """Resolve the OpenAI read timeout (seconds): env override > default, clamped.
 
-    A non-numeric or non-positive override falls back to the default, so a typo
-    in the secret can never disable the timeout (0 would mean wait forever) or
-    crash the client at construction.
+    Accepts an int or float string (``300`` or ``300.0``). A non-numeric or
+    non-positive override falls back to the default, so a typo in the secret can
+    never disable the timeout (0 would mean wait forever) or crash the client at
+    construction. The result is clamped to ``MAX_READ_TIMEOUT`` so an oversized
+    value can't stall the run and delay escalations.
     """
     raw = (os.environ.get(READ_TIMEOUT_ENV) or "").strip()
     if not raw:
         return DEFAULT_READ_TIMEOUT
     try:
-        val = int(raw)
+        val = int(float(raw))
     except ValueError:
         return DEFAULT_READ_TIMEOUT
-    return val if val > 0 else DEFAULT_READ_TIMEOUT
+    if val <= 0:
+        return DEFAULT_READ_TIMEOUT
+    return min(val, MAX_READ_TIMEOUT)
 
 
 class GPTClient(AIClient):
@@ -75,14 +82,18 @@ class GPTClient(AIClient):
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._api_key}",
                 # All retries (429 + read-timeout) reuse this same Request, so a
-                # per-call Idempotency-Key lets OpenAI dedupe a retried-but-
-                # already-processed generation — billed once, not twice (closes
-                # the double-charge window the bounded timeout-retry would open).
+                # per-call Idempotency-Key lets OpenAI de-duplicate a retried
+                # request it already processed — making the bounded timeout-
+                # retry's double-charge risk unlikely, though not guaranteed gone.
                 "Idempotency-Key": f"air-{uuid.uuid4()}",
             },
         )
+        # timeout_retries=1: gpt is the one provider that both needs the timeout
+        # retry (longest reviews) and is protected against double-billing by the
+        # Idempotency-Key above. The shared default is 0, so claude/gemini fail a
+        # read timeout cleanly rather than risk a dedupe-less double charge.
         payload = request_json_with_retry(
-            req, provider="OpenAI", timeout=self._read_timeout
+            req, provider="OpenAI", timeout=self._read_timeout, timeout_retries=1
         )
 
         text = ""
@@ -118,5 +129,6 @@ __all__ = [
     "OPENAI_API_URL",
     "DEFAULT_MODEL",
     "DEFAULT_READ_TIMEOUT",
+    "MAX_READ_TIMEOUT",
     "READ_TIMEOUT_ENV",
 ]

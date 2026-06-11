@@ -19,7 +19,7 @@ def test_gpt_discounts_cached_tokens(monkeypatch):
         },
     }
     monkeypatch.setattr(
-        call_gpt, "request_json_with_retry", lambda req, provider, timeout: payload
+        call_gpt, "request_json_with_retry", lambda req, provider, timeout, **kw: payload
     )
     resp = call_gpt.GPTClient(api_key="k", model="gpt-5").review("p")
     # 200k fresh + 800k cached(0.5x) at $1.25/M input.
@@ -72,7 +72,7 @@ def test_no_cache_fields_is_plain_cost(monkeypatch):
         "usage": {"prompt_tokens": 40_000, "completion_tokens": 1_000},
     }
     monkeypatch.setattr(
-        call_gpt, "request_json_with_retry", lambda req, provider, timeout: payload
+        call_gpt, "request_json_with_retry", lambda req, provider, timeout, **kw: payload
     )
     resp = call_gpt.GPTClient(api_key="k", model="gpt-5").review("p")
     assert resp.cost_usd == round((40_000 * 1.25 + 1_000 * 10.0) / 1_000_000, 6)
@@ -109,9 +109,10 @@ def test_gpt_uses_raised_read_timeout(monkeypatch):
     # round with a read TimeoutError (the burst of failures observed in prod).
     captured = {}
 
-    def fake(req, provider, timeout=None):
+    def fake(req, provider, timeout, **kw):
         captured["provider"] = provider
         captured["timeout"] = timeout
+        captured["timeout_retries"] = kw.get("timeout_retries")
         return _gpt_ok_payload()
 
     monkeypatch.delenv("OPENAI_READ_TIMEOUT", raising=False)
@@ -120,13 +121,16 @@ def test_gpt_uses_raised_read_timeout(monkeypatch):
     assert captured["provider"] == "OpenAI"
     assert captured["timeout"] == call_gpt.DEFAULT_READ_TIMEOUT
     assert captured["timeout"] >= 300  # higher than the 120s shared default
+    # gpt is the only provider that opts into the one bounded timeout retry
+    # (it carries the Idempotency-Key that makes the retry billing-safe).
+    assert captured["timeout_retries"] == 1
 
 
 def test_gpt_read_timeout_env_override(monkeypatch):
     # Operators can tune the ceiling per-repo via the secret.
     captured = {}
 
-    def fake(req, provider, timeout=None):
+    def fake(req, provider, timeout, **kw):
         captured["timeout"] = timeout
         return _gpt_ok_payload()
 
@@ -141,7 +145,7 @@ def test_gpt_read_timeout_bad_env_falls_back(monkeypatch):
     # crash the client; it falls back to the default.
     captured = {}
 
-    def fake(req, provider, timeout=None):
+    def fake(req, provider, timeout, **kw):
         captured["timeout"] = timeout
         return _gpt_ok_payload()
 
@@ -157,7 +161,7 @@ def test_gpt_sends_idempotency_key_for_safe_retry(monkeypatch):
     # not twice. Pin that the header is present and well-formed.
     captured = {}
 
-    def fake(req, provider, timeout):
+    def fake(req, provider, timeout, **kw):
         captured["key"] = req.get_header("Idempotency-key")
         return _gpt_ok_payload()
 
@@ -165,3 +169,23 @@ def test_gpt_sends_idempotency_key_for_safe_retry(monkeypatch):
     call_gpt.GPTClient(api_key="k", model="gpt-5").review("p")
     assert captured["key"]
     assert captured["key"].startswith("air-")
+
+
+def test_gpt_read_timeout_clamps_and_accepts_float(monkeypatch):
+    # An oversized override is clamped to MAX_READ_TIMEOUT (can't stall a round),
+    # and a float string is accepted rather than falling back to the default.
+    captured = {}
+
+    def fake(req, provider, timeout, **kw):
+        captured["timeout"] = timeout
+        return _gpt_ok_payload()
+
+    monkeypatch.setattr(call_gpt, "request_json_with_retry", fake)
+
+    monkeypatch.setenv("OPENAI_READ_TIMEOUT", "999999")
+    call_gpt.GPTClient(api_key="k", model="gpt-5").review("p")
+    assert captured["timeout"] == call_gpt.MAX_READ_TIMEOUT
+
+    monkeypatch.setenv("OPENAI_READ_TIMEOUT", "300.0")
+    call_gpt.GPTClient(api_key="k", model="gpt-5").review("p")
+    assert captured["timeout"] == 300

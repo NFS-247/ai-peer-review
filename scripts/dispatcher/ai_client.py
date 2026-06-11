@@ -40,6 +40,22 @@ def _retry_after_seconds(exc: urllib.error.HTTPError) -> Optional[float]:
         return None
 
 
+def _is_timeout_error(exc: BaseException) -> bool:
+    """True if ``exc`` is a read/connect timeout — bare or URLError-wrapped.
+
+    A timeout surfaces as ``socket.timeout`` (an alias of ``TimeoutError``) or,
+    from inside urllib's opener, as a ``URLError`` whose ``reason`` is that
+    timeout (or, on some stacks, the literal string "timed out"). Both must route
+    to the timeout budget rather than the transient (429/URLError) one.
+    """
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, (socket.timeout, TimeoutError)):
+        return True
+    return isinstance(reason, str) and "timed out" in reason.lower()
+
+
 def request_json_with_retry(
     req: urllib.request.Request,
     *,
@@ -48,7 +64,7 @@ def request_json_with_retry(
     max_attempts: int = 4,
     base_delay: float = 2.0,
     max_delay: float = 60.0,
-    timeout_retries: int = 1,
+    timeout_retries: int = 0,
     timeout_backoff: float = 5.0,
     sleep=time.sleep,
 ) -> dict:
@@ -60,35 +76,37 @@ def request_json_with_retry(
     ``RuntimeError`` with the provider + status, which the orchestrator treats
     as a reviewer being unavailable (and escalates).
 
-    A *read* timeout is handled on its own budget. ``urlopen`` raises
-    ``socket.timeout`` (an alias of ``TimeoutError``) when a slow generation
-    exceeds ``timeout``; that is NOT a ``URLError``, so without this branch it
-    would fail the round outright — exactly how gpt (the longest reviews)
-    intermittently lost rounds while claude/gemini finished. It gets up to
-    ``timeout_retries`` extra attempt(s) after a short ``timeout_backoff`` before
-    the reviewer is declared unavailable. A read timeout carries the same
-    in-flight risk that makes 5xx non-retryable (the request may already be
-    processing server-side), so the retry is deliberately small and bounded;
-    a token-billed caller (the OpenAI client) sends an ``Idempotency-Key`` so a
-    retried-but-already-processed request is de-duplicated and billed once, not
-    twice.
+    A *read*/connect timeout is handled on its own budget. It surfaces as
+    ``socket.timeout`` (an alias of ``TimeoutError``) or, from inside urllib's
+    opener, as a ``URLError`` wrapping one; both are routed to the timeout path
+    rather than the transient (429/URLError) path. Without that, a timeout fails
+    the round outright (how gpt, the longest reviews, intermittently lost rounds
+    while claude/gemini finished) or silently eats the transient budget.
+
+    ``timeout_retries`` defaults to 0 — a timeout fails the round cleanly with no
+    extra attempt — because retrying a timeout can double-bill if the request
+    already completed server-side. A caller that is idempotency-protected opts
+    in: the OpenAI client sets ``timeout_retries=1`` and sends an
+    ``Idempotency-Key`` so OpenAI can de-duplicate a retried request it already
+    processed, making a double-charge unlikely (not impossible), so the retry
+    stays small and bounded.
 
     The timeout budget is independent from the ``max_attempts`` (429/URLError)
-    budget: a read timeout does not consume an ``attempt`` or shift its backoff
-    index, so a slow generation can never quietly eat the transient-failure
-    budget.
+    budget: a timeout consumes a ``timeout_retries`` slot, never an ``attempt``
+    or its backoff index, so a slow generation can't quietly eat the
+    transient-failure budget.
 
     Every wait is capped at ``max_delay`` seconds — including a server-sent
     ``Retry-After`` — so a buggy or hostile upstream (e.g. ``Retry-After:
     86400``) can never stall the job; the round fails fast and escalates.
     """
     # Two independent budgets: ``attempt`` covers retryable HTTP (429/503) and
-    # URLError transient failures; ``timeouts_seen`` covers read timeouts. A
-    # timeout does NOT touch ``attempt`` (nor its backoff index), so a slow
-    # generation can't quietly eat the 429/URLError budget. The loop is bounded
-    # by the sum of both budgets — a hard backstop so it can never spin even if a
-    # future branch grows an ungated ``continue``; in normal operation a branch
-    # always raises or hits its own budget first.
+    # generic URLError transient failures; ``timeouts_seen`` covers read/connect
+    # timeouts. A timeout never touches ``attempt`` (nor its backoff index), so a
+    # slow generation can't quietly eat the 429/URLError budget. The loop is
+    # bounded by the sum of both budgets — a hard backstop so it can never spin
+    # even if a future branch grows an ungated ``continue``; in normal operation
+    # a branch always raises or hits its own budget first.
     attempt = 0
     timeouts_seen = 0
     for _ in range(max_attempts + timeout_retries):
@@ -96,9 +114,14 @@ def request_json_with_retry(
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            attempt += 1
             detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-            if exc.code in RETRYABLE_STATUS and attempt < max_attempts:
+            # Only a retryable status consumes the transient budget; a 400/401/etc
+            # raises at once without touching ``attempt`` (which then means exactly
+            # "retryable attempts made").
+            retryable = exc.code in RETRYABLE_STATUS
+            if retryable:
+                attempt += 1
+            if retryable and attempt < max_attempts:
                 delay = _retry_after_seconds(exc)
                 if delay is None:
                     delay = base_delay * (2 ** (attempt - 1))
@@ -107,18 +130,20 @@ def request_json_with_retry(
             raise RuntimeError(
                 f"{provider} API HTTP {exc.code}: {detail[:500]}"
             ) from exc
-        except (socket.timeout, TimeoutError) as exc:
-            # A read timeout is a sibling of OSError, not a URLError, so it must
-            # be caught explicitly or it escapes the retry loop entirely.
-            if timeouts_seen < timeout_retries:
-                timeouts_seen += 1
-                sleep(min(timeout_backoff, max_delay))
-                continue
-            raise RuntimeError(
-                f"{provider} API read timed out after {timeout}s "
-                f"(retried {timeouts_seen}x)"
-            ) from exc
-        except urllib.error.URLError as exc:
+        except (socket.timeout, TimeoutError, urllib.error.URLError) as exc:
+            # A read/connect timeout arrives bare (socket.timeout/TimeoutError) or
+            # wrapped as URLError(reason=timeout); both use the SEPARATE timeout
+            # budget. Any other URLError is a generic transient failure.
+            if _is_timeout_error(exc):
+                if timeouts_seen < timeout_retries:
+                    timeouts_seen += 1
+                    sleep(min(timeout_backoff, max_delay))
+                    continue
+                window = f" after {timeout}s" if timeout is not None else ""
+                raise RuntimeError(
+                    f"{provider} API read timed out{window} "
+                    f"(retried {timeouts_seen}x)"
+                ) from exc
             attempt += 1
             if attempt < max_attempts:
                 sleep(min(base_delay * (2 ** (attempt - 1)), max_delay))
