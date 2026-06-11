@@ -1191,10 +1191,33 @@ def _pause_all_in_flight(api: GitHubAPI, *, reason: str) -> None:
             continue
 
 
+def _build_github_api(cfg: DispatcherConfig) -> GitHubAPI:
+    """Prefer a GitHub App installation token (per-tenant rate budget) when App
+    credentials are configured; otherwise use the workflow GITHUB_TOKEN.
+
+    An App-minting failure is intentionally NOT swallowed: if you configured App
+    creds you want them used, and a silent fall-through to GITHUB_TOKEN would mask
+    a misconfiguration behind the very rate limit the App exists to avoid.
+    """
+    if cfg.github_app_id and cfg.github_app_private_key:
+        return GitHubAPI.from_app(
+            app_id=cfg.github_app_id,
+            private_key_pem=cfg.github_app_private_key,
+            owner=cfg.repo_owner,
+            repo=cfg.repo_name,
+        )
+    return GitHubAPI(cfg.github_token, cfg.repo_owner, cfg.repo_name)
+
+
 def run() -> int:
     cfg = load_from_env()
-    if not cfg.github_token:
-        print("GITHUB_TOKEN not set; nothing to do", file=sys.stderr)
+    has_app = bool(cfg.github_app_id and cfg.github_app_private_key)
+    if not cfg.github_token and not has_app:
+        print(
+            "No GitHub credentials set (GITHUB_TOKEN, or GITHUB_APP_ID + "
+            "GITHUB_APP_PRIVATE_KEY); nothing to do",
+            file=sys.stderr,
+        )
         return 0
 
     # Register every real secret value so redaction scrubs it from any comment
@@ -1203,11 +1226,11 @@ def run() -> int:
         cfg.anthropic_api_key, cfg.openai_api_key, cfg.gemini_api_key,
         cfg.resend_api_key, cfg.github_token, cfg.verdict_secret,
         cfg.google_chat_webhook_url, cfg.approve_webapp_url,
-        cfg.approve_signing_secret,
+        cfg.approve_signing_secret, cfg.github_app_private_key,
     ):
         register_secret(s)
 
-    api = GitHubAPI(cfg.github_token, cfg.repo_owner, cfg.repo_name)
+    api = _build_github_api(cfg)
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
 
     # ---- schedule: periodic sweep that fires deferred escalations once the dev

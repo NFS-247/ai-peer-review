@@ -54,6 +54,15 @@ front door use for that tenant. The engine's workflow would request the App toke
 instead of `GITHUB_TOKEN` (a small auth swap at the top of the run); the front
 door mints an installation token per tenant on demand (cache it ~50 min).
 
+**Engine half — built (`scripts/dispatcher/github_app.py`).** A stdlib-only RS256
+JWT + installation-token minter (no third-party crypto) is in place: set the
+`app_id` / `app_private_key` action inputs (env `GITHUB_APP_ID` /
+`GITHUB_APP_PRIVATE_KEY`) and the dispatcher authenticates via
+`GitHubAPI.from_app` instead of the `GITHUB_TOKEN`. Still to do: register the App
+and grant its repo permissions, and point the front door's board/approval reads
+at the same minter — they ride the operator's shared user bucket today, the limit
+that bit us.
+
 **One-time human step (unavoidable, by design):** the tenant clicks **Install**
 to grant repo access — GitHub requires that consent. It folds into onboarding as
 a single button; **Milestone 2 (the provisioner) automates everything around it**
