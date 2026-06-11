@@ -52,7 +52,7 @@
   "max_review_rounds": 6,
   "high_stakes_round_budget": 2,
   "per_pr_cost_ceiling_usd": 8.0,
-  "daily_cost_ceiling_usd": 25.0,
+  "daily_cost_ceiling_usd": 50.0,
   "escalation_cooldown_minutes": 10,
 
   "gemini_model": "gemini-2.5-flash",
