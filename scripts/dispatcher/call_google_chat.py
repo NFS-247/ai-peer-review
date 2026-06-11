@@ -151,9 +151,11 @@ def build_escalation_card(
 
     # Plain-language lead when the caller passes the trigger; otherwise fall back
     # to the literal engine reason (keeps existing callers/tests unchanged).
+    # Use the plain-language lead only for a RECOGNIZED trigger; an unknown trigger
+    # keeps the literal reason so an unexpected state never hides its diagnostics.
     why_html = (
         f"{_esc(plain_escalation_lead(trigger))}<br>"
-        if trigger
+        if trigger in _PLAIN_LEAD
         else f"<b>Why:</b> {_esc(reason_short)}<br>"
     )
     body = (
@@ -188,7 +190,7 @@ def build_escalation_card(
                 "card": {
                     "header": {
                         "title": f"{project_name}: PR #{pr_number} needs you",
-                        "subtitle": f"tier: {tier}" if trigger else f"tier: {tier} · {reason_short}",
+                        "subtitle": f"tier: {tier}" if trigger in _PLAIN_LEAD else f"tier: {tier} · {reason_short}",
                     },
                     "sections": [
                         {

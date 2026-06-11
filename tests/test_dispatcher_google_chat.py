@@ -452,14 +452,19 @@ def test_escalation_card_keeps_literal_reason_without_trigger():
     assert c["header"]["subtitle"] == "tier: backend · CI is persistently failing"
 
 
-def test_escalation_card_unknown_trigger_uses_fallback_lead():
+def test_escalation_card_unknown_trigger_keeps_literal_reason():
+    # An UNRECOGNIZED trigger must NOT hide the precise reason behind a generic
+    # fallback — keep the literal "Why: <reason>" body + reason in the subtitle so
+    # an unexpected state keeps its diagnostics (gpt's review note).
     card = gc.build_escalation_card(
         project_name="P", pr_number=1, pr_url="http://x/1", pr_title="t",
-        tier="backend", reason_short="something internal",
+        tier="backend", reason_short="something unexpected happened",
         reviewer_summaries={}, trigger="not_a_real_trigger",
     )
-    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
-    assert "waiting on your decision" in text          # safe fallback, no KeyError
+    c = card["cardsV2"][0]["card"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "<b>Why:</b> something unexpected happened" in text
+    assert c["header"]["subtitle"] == "tier: backend · something unexpected happened"
 
 
 def test_escalation_card_links_to_down_reviewers_provider_console():

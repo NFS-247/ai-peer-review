@@ -39,7 +39,7 @@ def test_gemini_discounts_cached_content_tokens(monkeypatch):
             "cachedContentTokenCount": 600_000,
         },
     }
-    monkeypatch.setattr(call_gemini, "request_json_with_retry", lambda req, provider: payload)
+    monkeypatch.setattr(call_gemini, "request_json_with_retry", lambda req, provider, timeout=None, **kw: payload)
     resp = call_gemini.GeminiClient(api_key="k", model="gemini-2.5-pro").review("p")
     # gemini-2.5-pro input $1.25/M, cache 0.25x. 400k fresh + 600k cached.
     expected = round((400_000 * 1.25 + 600_000 * 1.25 * 0.25) / 1_000_000, 6)
@@ -56,7 +56,7 @@ def test_claude_accounts_cache_read_and_write(monkeypatch):
             "cache_creation_input_tokens": 200_000,
         },
     }
-    monkeypatch.setattr(call_claude, "request_json_with_retry", lambda req, provider: payload)
+    monkeypatch.setattr(call_claude, "request_json_with_retry", lambda req, provider, timeout=None, **kw: payload)
     resp = call_claude.ClaudeClient(api_key="k", model="claude-opus-4-7").review("p")
     # opus input $15/M; fresh 100k + read 500k(0.1x) + write 200k(1.25x).
     expected = round(
@@ -83,7 +83,7 @@ def test_gemini_quotes_model_in_url(monkeypatch):
     # chars must be percent-encoded so they cannot add query params.
     captured = {}
 
-    def fake(req, provider):
+    def fake(req, provider, timeout=None, **kw):
         captured["url"] = req.full_url
         return {
             "candidates": [{"content": {"parts": [{"text": "{}"}]}}],

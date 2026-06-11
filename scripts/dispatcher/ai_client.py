@@ -25,14 +25,17 @@ from typing import Optional
 # been partially processed, so a blind retry could double-charge.
 RETRYABLE_STATUS = frozenset({429, 503})
 
-# Read window for a single reviewer call, in seconds. Generous on purpose: a
-# large diff can legitimately take minutes to review, and too short a window
-# reports a slow-but-healthy reviewer as "unavailable" — a false alarm that
-# escalates to the operator's phone (the live gemini/gpt "could not be reached"
-# pings on big diffs). 300s matches call_gpt's DEFAULT_READ_TIMEOUT so all three
-# reviewers get the same window; the previous 120s left claude/gemini far tighter
-# than gpt. Still bounded, so a genuinely hung provider fails fast and escalates.
-DEFAULT_READ_TIMEOUT = 300
+# Read window for a single REVIEWER call, in seconds. The reviewer clients pass
+# this EXPLICITLY (claude/gemini below; gpt via its own env-configurable default
+# of the same value), so the longer window is scoped to reviews —
+# request_json_with_retry keeps a conservative 120s default for any other/
+# incidental caller (fail-fast preserved). Generous on purpose: a large diff can
+# take minutes to review, and too short a window reports a slow-but-healthy
+# reviewer as "unavailable" (the live gemini/gpt "could not be reached" pings on
+# big diffs); the old 120s left claude/gemini far tighter than gpt's 300s. A read
+# timeout consumes the SEPARATE single-shot timeout_retries budget (0 for these
+# callers), so this is ONE bounded read per reviewer — never 300s × max_attempts.
+REVIEWER_READ_TIMEOUT = 300
 
 
 def _retry_after_seconds(exc: urllib.error.HTTPError) -> Optional[float]:
@@ -69,7 +72,7 @@ def request_json_with_retry(
     req: urllib.request.Request,
     *,
     provider: str,
-    timeout: int = DEFAULT_READ_TIMEOUT,
+    timeout: int = 120,
     max_attempts: int = 4,
     base_delay: float = 2.0,
     max_delay: float = 60.0,
@@ -193,5 +196,5 @@ __all__ = [
     "AIClient",
     "request_json_with_retry",
     "RETRYABLE_STATUS",
-    "DEFAULT_READ_TIMEOUT",
+    "REVIEWER_READ_TIMEOUT",
 ]

@@ -1246,7 +1246,14 @@ def _run_review_round(
             spend_breakdown=spend_breakdown,
             spent_usd=daily_total if is_budget_stop else None,
             trigger=decision.trigger,
-            unavailable_reviewers=tuple(required_failed),
+            # Provider-console buttons belong ONLY to a reviewer-unavailable stop;
+            # don't leak them onto an unrelated escalation that merely happens to
+            # have a failed reviewer recorded this round.
+            unavailable_reviewers=(
+                tuple(required_failed)
+                if decision.trigger == EscalationTrigger.REQUIRED_REVIEWER_UNAVAILABLE
+                else ()
+            ),
         )
 
     return 0

@@ -15,7 +15,7 @@ import json
 import os
 import urllib.request
 
-from .ai_client import AIClient, AIResponse, request_json_with_retry
+from .ai_client import AIClient, AIResponse, REVIEWER_READ_TIMEOUT, request_json_with_retry
 from .pricing import token_cost
 
 
@@ -49,7 +49,9 @@ class ClaudeClient(AIClient):
                 "anthropic-version": "2023-06-01",
             },
         )
-        payload = request_json_with_retry(req, provider="Anthropic")
+        payload = request_json_with_retry(
+            req, provider="Anthropic", timeout=REVIEWER_READ_TIMEOUT
+        )
 
         text = ""
         for block in payload.get("content", []):

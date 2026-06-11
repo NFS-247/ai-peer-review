@@ -16,7 +16,7 @@ import os
 import urllib.parse
 import urllib.request
 
-from .ai_client import AIClient, AIResponse, request_json_with_retry
+from .ai_client import AIClient, AIResponse, REVIEWER_READ_TIMEOUT, request_json_with_retry
 from .pricing import token_cost
 
 
@@ -55,7 +55,9 @@ class GeminiClient(AIClient):
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        payload = request_json_with_retry(req, provider="Gemini")
+        payload = request_json_with_retry(
+            req, provider="Gemini", timeout=REVIEWER_READ_TIMEOUT
+        )
 
         text = ""
         candidates = payload.get("candidates", [])
