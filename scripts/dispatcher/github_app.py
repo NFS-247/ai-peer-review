@@ -68,7 +68,13 @@ def _parse_expires_at(value: Optional[str]) -> Optional[float]:
 
 
 def _der_read_tlv(data: bytes, i: int) -> tuple[int, bytes, int]:
-    """Read one DER TLV at ``data[i]``; return (tag, value_bytes, next_index)."""
+    """Read one DER TLV at ``data[i]``; return (tag, value_bytes, next_index).
+
+    Every read is bounds-checked, so truncated or garbage input raises a clear
+    ValueError rather than an IndexError escaping the parser.
+    """
+    if i + 1 >= len(data):
+        raise ValueError("truncated DER: missing tag/length")
     tag = data[i]
     length = data[i + 1]
     i += 2
@@ -78,8 +84,12 @@ def _der_read_tlv(data: bytes, i: int) -> tuple[int, bytes, int]:
             # 0x80 = indefinite length: forbidden in DER, and would otherwise
             # misparse as a zero-length value. Reject rather than silently corrupt.
             raise ValueError("indefinite-length DER is not supported")
+        if i + num > len(data):
+            raise ValueError("truncated DER: length bytes")
         length = int.from_bytes(data[i:i + num], "big")
         i += num
+    if i + length > len(data):
+        raise ValueError("truncated DER: value")
     return tag, data[i:i + length], i + length
 
 
@@ -99,9 +109,9 @@ def _parse_rsa_private_key(pem: str) -> tuple[int, int]:
     if "PRIVATE KEY" not in text:
         raise ValueError("not a PEM-encoded private key")
     body = "".join(
-        ln.strip()
-        for ln in text.splitlines()
-        if ln.strip() and not ln.startswith("-----")
+        s
+        for s in (ln.strip() for ln in text.splitlines())
+        if s and not s.startswith("-----")  # filter on the STRIPPED line
     )
     try:
         der = base64.b64decode(body)
@@ -144,13 +154,8 @@ def _sign_rs256(message: bytes, n: int, d: int) -> bytes:
     return signature.to_bytes(k, "big")
 
 
-def build_app_jwt(
-    app_id: object,
-    private_key_pem: str,
-    *,
-    now: Optional[float] = None,
-) -> str:
-    """Build a signed App JWT (RS256) for ``POST .../access_tokens``.
+def _sign_jwt(app_id: object, n: int, d: int, *, now: Optional[float] = None) -> str:
+    """Build a signed App JWT from already-parsed key components (n, d).
 
     ``iat`` is backdated 60s for clock drift and ``exp`` is 8 min out — inside
     GitHub's 10-minute ceiling. ``iss`` is the App ID (or client ID).
@@ -163,9 +168,33 @@ def build_app_jwt(
         "iss": str(app_id),
     }
     signing_input = f"{_b64url(_compact_json(header))}.{_b64url(_compact_json(payload))}"
-    n, d = _parse_rsa_private_key(private_key_pem)
     signature = _sign_rs256(signing_input.encode("ascii"), n, d)
     return f"{signing_input}.{_b64url(signature)}"
+
+
+def build_app_jwt(
+    app_id: object,
+    private_key_pem: str,
+    *,
+    now: Optional[float] = None,
+) -> str:
+    """Parse ``private_key_pem`` and build a signed App JWT (RS256)."""
+    n, d = _parse_rsa_private_key(private_key_pem)
+    return _sign_jwt(app_id, n, d, now=now)
+
+
+class GitHubAppError(RuntimeError):
+    """A failure minting a GitHub App installation token.
+
+    ``status`` is the HTTP status when the failure came from the API (404 = the
+    App isn't installed on the repo, 401 = bad credentials, 5xx = a GitHub-side
+    fault); it is None for a transport error (DNS / connection). Callers use it to
+    tell a *misconfig* (4xx) from a *transient* fault (5xx / network).
+    """
+
+    def __init__(self, message: str, *, status: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _api_request(
@@ -197,8 +226,14 @@ def _api_request(
         # Surface a useful status + body, but raise our own error so the request
         # (with its Authorization: Bearer <JWT> header) can't ride into a CI log.
         detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-        raise RuntimeError(
-            f"GitHub App API {method} {url} failed: HTTP {exc.code}: {detail[:300]}"
+        raise GitHubAppError(
+            f"GitHub App API {method} {url} failed: HTTP {exc.code}: {detail[:300]}",
+            status=exc.code,
+        ) from exc
+    except urllib.error.URLError as exc:
+        # Transport-level failure (DNS / connection / timeout): no HTTP status.
+        raise GitHubAppError(
+            f"GitHub App API {method} {url} failed: {exc.reason}", status=None
         ) from exc
 
 
@@ -222,11 +257,11 @@ class GitHubApp:
     ) -> None:
         if app_id is None or not str(app_id).strip():
             raise ValueError("app_id is required")
-        # Validate the key up front so a bad secret fails at construction, not
-        # mid-run on the first mint.
-        _parse_rsa_private_key(private_key_pem)
+        # Parse once at construction: validates the key AND caches (n, d) so every
+        # _jwt() signs without re-parsing the PEM (and a bad key fails here, not
+        # mid-run).
+        self._n, self._d = _parse_rsa_private_key(private_key_pem)
         self._app_id = app_id
-        self._pem = private_key_pem
         self._api_url = api_url.rstrip("/")
         self._now = now
         self._request = request
@@ -238,7 +273,7 @@ class GitHubApp:
         self._install_cache: dict[tuple[str, str], int] = {}
 
     def _jwt(self) -> str:
-        jwt = build_app_jwt(self._app_id, self._pem, now=self._now())
+        jwt = _sign_jwt(self._app_id, self._n, self._d, now=self._now())
         if self._register_secret is not None:
             self._register_secret(jwt)  # scrub from any later log/comment
         return jwt
@@ -287,4 +322,4 @@ class GitHubApp:
         return self.installation_token(self.installation_id_for_repo(owner, repo))
 
 
-__all__ = ["GitHubApp", "build_app_jwt", "GITHUB_API"]
+__all__ = ["GitHubApp", "GitHubAppError", "build_app_jwt", "GITHUB_API"]

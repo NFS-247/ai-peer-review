@@ -1195,30 +1195,35 @@ def _build_github_api(cfg: DispatcherConfig) -> GitHubAPI:
     """Prefer a GitHub App installation token (per-tenant rate budget) when App
     credentials are configured; otherwise the workflow GITHUB_TOKEN.
 
-    If minting the App token fails (a transient GitHub error, or a misconfigured
-    App), fall back to GITHUB_TOKEN when one is present — but log loudly to stderr
-    so the failure is visible rather than silently running on the wrong bucket. A
-    transient blip shouldn't crash the run; with no token to fall back to there is
-    nothing to do but re-raise.
+    A *misconfig* (bad key/app_id, or the App not installed on the repo → a 4xx)
+    fails loud: silently using GITHUB_TOKEN would route right back through the
+    shared rate-limit bucket this exists to escape AND hide the misconfig. Only a
+    *transient* fault (network, or a GitHub 5xx) degrades to GITHUB_TOKEN for this
+    one run, and only when one is configured — a blip shouldn't lose the round.
     """
-    if cfg.github_app_id and cfg.github_app_private_key:
-        try:
-            return GitHubAPI.from_app(
-                app_id=cfg.github_app_id,
-                private_key_pem=cfg.github_app_private_key,
-                owner=cfg.repo_owner,
-                repo=cfg.repo_name,
-            )
-        except Exception as exc:  # noqa: BLE001 - degrade gracefully, don't crash
-            if not cfg.github_token:
-                raise
-            print(
-                f"GitHub App token mint failed "
-                f"({type(exc).__name__}: {redact(str(exc))}); falling back to "
-                f"GITHUB_TOKEN for this run.",
-                file=sys.stderr,
-            )
-    return GitHubAPI(cfg.github_token, cfg.repo_owner, cfg.repo_name)
+    if not (cfg.github_app_id and cfg.github_app_private_key):
+        return GitHubAPI(cfg.github_token, cfg.repo_owner, cfg.repo_name)
+
+    from .github_app import GitHubAppError
+    try:
+        return GitHubAPI.from_app(
+            app_id=cfg.github_app_id,
+            private_key_pem=cfg.github_app_private_key,
+            owner=cfg.repo_owner,
+            repo=cfg.repo_name,
+        )
+    except Exception as exc:  # noqa: BLE001 - classify, then degrade or fail loud
+        status = getattr(exc, "status", None)
+        transient = isinstance(exc, GitHubAppError) and (status is None or status >= 500)
+        if not (transient and cfg.github_token):
+            raise  # misconfig, or nothing to fall back to -> surfaced by run()
+        print(
+            f"Transient GitHub App token mint failure "
+            f"({type(exc).__name__}: {redact(str(exc))}); falling back to "
+            f"GITHUB_TOKEN for this run.",
+            file=sys.stderr,
+        )
+        return GitHubAPI(cfg.github_token, cfg.repo_owner, cfg.repo_name)
 
 
 def run() -> int:
@@ -1242,7 +1247,17 @@ def run() -> int:
     ):
         register_secret(s)
 
-    api = _build_github_api(cfg)
+    try:
+        api = _build_github_api(cfg)
+    except Exception as exc:  # noqa: BLE001 - a clean message, not a raw traceback
+        print(
+            f"Could not initialize the GitHub client "
+            f"({type(exc).__name__}: {redact(str(exc))}). If using a GitHub App, "
+            f"check app_id, the private key, and that the App is installed on "
+            f"this repo.",
+            file=sys.stderr,
+        )
+        return 1
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
 
     # ---- schedule: periodic sweep that fires deferred escalations once the dev

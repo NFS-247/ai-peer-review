@@ -314,13 +314,24 @@ def test_api_request_wraps_http_error_without_leaking_jwt(monkeypatch):
         )
 
     monkeypatch.setattr(A.urllib.request, "urlopen", boom)
-    with pytest.raises(RuntimeError) as ei:
+    with pytest.raises(A.GitHubAppError) as ei:
         A._api_request(
             "GET", "https://api.github.com/repos/o/r/installation", jwt="header.payload.sig"
         )
+    assert ei.value.status == 404                     # 4xx classified as misconfig
     message = str(ei.value)
     assert "404" in message
     assert "header.payload.sig" not in message       # the App JWT must not leak
+
+
+def test_api_request_wraps_network_error_with_no_status(monkeypatch):
+    def boom(req, timeout=0):
+        raise A.urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(A.urllib.request, "urlopen", boom)
+    with pytest.raises(A.GitHubAppError) as ei:
+        A._api_request("GET", "https://api.github.com/x", jwt="h.p.s")
+    assert ei.value.status is None                    # transport error -> no status
 
 
 def test_construction_validates_inputs():

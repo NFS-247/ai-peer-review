@@ -7,6 +7,7 @@ import pytest
 from scripts.dispatcher import main
 from scripts.dispatcher.config import load_from_env
 from scripts.dispatcher.github_api import GitHubAPI
+from scripts.dispatcher.github_app import GitHubAppError
 
 
 class _FakeApp:
@@ -84,29 +85,53 @@ def test_config_app_credentials_default_empty():
     assert cfg.github_app_private_key == ""
 
 
-def _boom(**kw):
-    raise RuntimeError("mint blew up")
+def _raises(exc):
+    def _from_app(**kw):
+        raise exc
+    return _from_app
 
 
-def test_build_github_api_falls_back_when_mint_fails(monkeypatch, capsys):
-    # A transient mint failure degrades to GITHUB_TOKEN (loudly) rather than
-    # crashing the run.
-    monkeypatch.setattr(main.GitHubAPI, "from_app", _boom)
+@pytest.mark.parametrize("exc", [
+    GitHubAppError("github 503", status=503),   # 5xx -> transient
+    GitHubAppError("dns failure", status=None),  # network -> transient
+])
+def test_build_github_api_falls_back_on_transient(monkeypatch, capsys, exc):
+    # A transient fault degrades to GITHUB_TOKEN (loudly) rather than losing the run.
+    monkeypatch.setattr(main.GitHubAPI, "from_app", _raises(exc))
     cfg = SimpleNamespace(
         github_app_id="1", github_app_private_key="K",
         github_token="tok", repo_owner="o", repo_name="r",
     )
     api = main._build_github_api(cfg)
     assert api._token == "tok"
-    assert "mint failed" in capsys.readouterr().err.lower()
+    assert "fall" in capsys.readouterr().err.lower()
 
 
-def test_build_github_api_reraises_mint_failure_without_token(monkeypatch):
-    # App-only setup (no GITHUB_TOKEN to fall back to): the failure propagates.
-    monkeypatch.setattr(main.GitHubAPI, "from_app", _boom)
+@pytest.mark.parametrize("exc", [
+    GitHubAppError("not installed", status=404),  # 4xx -> misconfig
+    GitHubAppError("bad creds", status=401),       # 4xx -> misconfig
+    ValueError("malformed private key"),            # construction -> misconfig
+])
+def test_build_github_api_raises_on_misconfig(monkeypatch, exc):
+    # A misconfig must NOT silently fall back to GITHUB_TOKEN — that would mask it
+    # behind the shared bucket. It propagates (run() turns it into a clean message).
+    monkeypatch.setattr(main.GitHubAPI, "from_app", _raises(exc))
+    cfg = SimpleNamespace(
+        github_app_id="1", github_app_private_key="K",
+        github_token="tok", repo_owner="o", repo_name="r",
+    )
+    with pytest.raises(type(exc)):
+        main._build_github_api(cfg)
+
+
+def test_build_github_api_transient_without_token_raises(monkeypatch):
+    # Transient, but no GITHUB_TOKEN to fall back to -> propagate.
+    monkeypatch.setattr(
+        main.GitHubAPI, "from_app", _raises(GitHubAppError("x", status=503))
+    )
     cfg = SimpleNamespace(
         github_app_id="1", github_app_private_key="K",
         github_token="", repo_owner="o", repo_name="r",
     )
-    with pytest.raises(RuntimeError):
+    with pytest.raises(GitHubAppError):
         main._build_github_api(cfg)
