@@ -47,6 +47,11 @@ class DispatcherConfig:
     # Empty -> the default onboarding@resend.dev, which can't deliver to the
     # operator, so email fails and the PR-comment fallback carries the alert.
     email_from: str = ""
+    # GitHub App credentials (optional). When BOTH are set, the dispatcher mints a
+    # per-installation token (its own 5–15k req/hr quota) instead of the per-repo
+    # GITHUB_TOKEN's 1k/hr — see github_app.py / SCALING.md Move 1.
+    github_app_id: str = ""
+    github_app_private_key: str = ""
 
     tiers: dict[str, TierConfig] = field(default_factory=dict)
     max_review_rounds: int = 6
@@ -197,6 +202,8 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         approve_webapp_url=secret("APPROVE_WEBAPP_URL"),
         approve_signing_secret=secret("APPROVE_SIGNING_SECRET"),
         email_from=email_from,
+        github_app_id=(e.get("GITHUB_APP_ID") or "").strip(),
+        github_app_private_key=(secret("GITHUB_APP_PRIVATE_KEY") or "").strip(),
         tiers=tiers_from_repo_config(rc),
         max_review_rounds=max_rounds,
         per_pr_cost_ceiling_usd=per_pr_ceiling,

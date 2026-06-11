@@ -1191,10 +1191,55 @@ def _pause_all_in_flight(api: GitHubAPI, *, reason: str) -> None:
             continue
 
 
+def _build_github_api(cfg: DispatcherConfig) -> GitHubAPI:
+    """Prefer a GitHub App installation token (per-tenant rate budget) when App
+    credentials are configured; otherwise the workflow GITHUB_TOKEN.
+
+    A *misconfig* (bad key/app_id, or the App not installed on the repo → a 4xx)
+    fails loud: silently using GITHUB_TOKEN would route right back through the
+    shared rate-limit bucket this exists to escape AND hide the misconfig. Only a
+    *transient* fault (network, or a GitHub 5xx) degrades to GITHUB_TOKEN for this
+    one run, and only when one is configured — a blip shouldn't lose the round.
+    """
+    if not (cfg.github_app_id and cfg.github_app_private_key):
+        return GitHubAPI(cfg.github_token, cfg.repo_owner, cfg.repo_name)
+
+    from .github_app import GitHubAppError
+    try:
+        return GitHubAPI.from_app(
+            app_id=cfg.github_app_id,
+            private_key_pem=cfg.github_app_private_key,
+            owner=cfg.repo_owner,
+            repo=cfg.repo_name,
+        )
+    except Exception as exc:  # noqa: BLE001 - classify, then degrade or fail loud
+        status = getattr(exc, "status", None)
+        # Transient = network/transport (no status), a rate limit (429), or a
+        # GitHub-side 5xx. A 4xx (bad creds / app-not-installed) or a non-API
+        # error (e.g. a bad-key ValueError) is a misconfig and is NOT degraded.
+        transient = isinstance(exc, GitHubAppError) and (
+            status is None or status == 429 or status >= 500
+        )
+        if not (transient and cfg.github_token):
+            raise  # misconfig, or nothing to fall back to -> surfaced by run()
+        print(
+            f"Transient GitHub App token mint failure "
+            f"({type(exc).__name__}: {redact(str(exc))}); falling back to "
+            f"GITHUB_TOKEN for this run.",
+            file=sys.stderr,
+        )
+        return GitHubAPI(cfg.github_token, cfg.repo_owner, cfg.repo_name)
+
+
 def run() -> int:
     cfg = load_from_env()
-    if not cfg.github_token:
-        print("GITHUB_TOKEN not set; nothing to do", file=sys.stderr)
+    has_app = bool(cfg.github_app_id and cfg.github_app_private_key)
+    if not cfg.github_token and not has_app:
+        print(
+            "No GitHub credentials set (GITHUB_TOKEN, or GITHUB_APP_ID + "
+            "GITHUB_APP_PRIVATE_KEY); nothing to do",
+            file=sys.stderr,
+        )
         return 0
 
     # Register every real secret value so redaction scrubs it from any comment
@@ -1203,11 +1248,21 @@ def run() -> int:
         cfg.anthropic_api_key, cfg.openai_api_key, cfg.gemini_api_key,
         cfg.resend_api_key, cfg.github_token, cfg.verdict_secret,
         cfg.google_chat_webhook_url, cfg.approve_webapp_url,
-        cfg.approve_signing_secret,
+        cfg.approve_signing_secret, cfg.github_app_private_key,
     ):
         register_secret(s)
 
-    api = GitHubAPI(cfg.github_token, cfg.repo_owner, cfg.repo_name)
+    try:
+        api = _build_github_api(cfg)
+    except Exception as exc:  # noqa: BLE001 - a clean message, not a raw traceback
+        print(
+            f"Could not initialize the GitHub client "
+            f"({type(exc).__name__}: {redact(str(exc))}). If using a GitHub App, "
+            f"check app_id, the private key, and that the App is installed on "
+            f"this repo.",
+            file=sys.stderr,
+        )
+        return 1
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
 
     # ---- schedule: periodic sweep that fires deferred escalations once the dev

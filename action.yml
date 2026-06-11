@@ -75,6 +75,14 @@ inputs:
     description: "Flat per-period dev/orchestration fee recorded for invoicing. Empty uses the repo config value (default 0)."
     required: false
     default: ""
+  app_id:
+    description: "GitHub App id. When set with app_private_key, the dispatcher mints a per-installation token (its own 5–15k req/hr quota) instead of the per-repo GITHUB_TOKEN (1k/hr). Optional; see SCALING.md."
+    required: false
+    default: ""
+  app_private_key:
+    description: "PEM private key for the GitHub App in app_id. Pass secrets.APP_PRIVATE_KEY. Required only if app_id is set."
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -115,4 +123,6 @@ runs:
         GOOGLE_CHAT_WEBHOOK_URL: ${{ inputs.google_chat_webhook_url }}
         APPROVE_WEBAPP_URL: ${{ inputs.approve_webapp_url }}
         APPROVE_SIGNING_SECRET: ${{ inputs.approve_signing_secret }}
+        GITHUB_APP_ID: ${{ inputs.app_id }}
+        GITHUB_APP_PRIVATE_KEY: ${{ inputs.app_private_key }}
       run: python -m scripts.dispatcher.main

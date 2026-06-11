@@ -107,6 +107,32 @@ class GitHubAPI:
         # lookups fetch the issue directly instead of re-listing every issue.
         self._marker_issue_cache: dict[str, int] = {}
 
+    @classmethod
+    def from_app(
+        cls,
+        *,
+        app_id: object,
+        private_key_pem: str,
+        owner: str,
+        repo: str,
+        app: object = None,
+    ) -> "GitHubAPI":
+        """Build a client authed with a GitHub App *installation* token.
+
+        Each installation has its own 5–15k req/hr quota, so this lifts the
+        per-repo GITHUB_TOKEN 1k/hr cap and stops every tenant sharing one PAT
+        bucket (see github_app.py / SCALING.md Move 1). The token is minted once
+        here; for a CI run it comfortably outlives the job.
+        """
+        from .github_app import GitHubApp  # optional path; keep the import local
+        from .redact import register_secret
+        # The minter registers the JWT + installation token via this hook as it
+        # mints them, so both bearer creds are scrubbed before first use.
+        minter = app or GitHubApp(
+            app_id, private_key_pem, register_secret=register_secret
+        )
+        return cls(minter.token_for_repo(owner, repo), owner, repo)
+
     # ---- internals -------------------------------------------------------
 
     def _request(
