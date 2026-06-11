@@ -19,6 +19,7 @@ class MinRead:
     def list_open_pulls(self, repo): return []
     def list_labels(self, repo, n): return []
     def list_issue_comments(self, repo, n): return []
+    def list_issue_comments_for_repo(self, repo): return []
     def find_issue_body_by_marker(self, repo, marker): return ""
 
 

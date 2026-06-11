@@ -34,8 +34,11 @@ class FakeRead:
              "labels": [{"name": "dispatcher:tier-backend"}, {"name": "dispatcher:round-2"}]},
         ]
 
-    def list_issue_comments(self, repo, number):
-        return [_state_comment(5.8)] if number == 114 else []
+    def list_issue_comments_for_repo(self, repo):
+        # One repo-wide sweep; each comment carries the issue_url _gather groups by.
+        c = dict(_state_comment(5.8))
+        c["issue_url"] = f"https://api.github.com/repos/{repo}/issues/114"
+        return [c]
 
     def find_issue_body_by_marker(self, repo, marker):
         return _ledger([{"ts": NOW - 50, "cost": 5.8, "by": {"claude": 5.0, "gpt": 0.8}}])
@@ -134,3 +137,40 @@ def test_board_isolates_a_failing_repo():
     assert "Phase 4a" in r.body                 # the healthy repo's PRs show
     assert "Couldn't read this repo" in r.body  # the bad repo shows an error, not a 500
     assert "HTTP 404" not in r.body             # but the raw detail is NOT leaked to the page
+
+
+def test_board_fetches_comments_once_per_repo_not_per_pr():
+    """gemini round-2 concern: no per-PR comment fan-out. A repo's comments are
+    read in a single sweep regardless of how many PRs it has."""
+    calls = {"sweep": 0, "per_pr": 0}
+
+    class CountingRead(FakeRead):
+        def list_issue_comments_for_repo(self, repo):
+            calls["sweep"] += 1
+            return super().list_issue_comments_for_repo(repo)
+
+        def list_issue_comments(self, repo, number):
+            calls["per_pr"] += 1
+            return []
+
+    deps = Deps(read=CountingRead(), operator_client=lambda c: FakeOperator(),
+                cfg=_cfg(), now_ts=NOW)
+    r = route("GET", "/", cookies={}, form={}, deps=deps)
+    assert r.status == 200 and "$5.80" in r.body   # cost still resolved from the sweep
+    assert calls["sweep"] == 1                       # one sweep for the repo
+    assert calls["per_pr"] == 0                      # never a per-PR comment call (2 PRs)
+
+
+def test_comment_grouping_by_issue_url():
+    from front_door.app.router import _group_comments_by_pr, _issue_number
+    assert _issue_number({"issue_url": "https://api.github.com/repos/o/r/issues/114"}) == 114
+    assert _issue_number({"issue_url": ".../issues/114/"}) == 114
+    assert _issue_number({}) == 0
+    g = _group_comments_by_pr([
+        {"issue_url": ".../issues/1", "body": "a"},
+        {"issue_url": ".../issues/1", "body": "b"},
+        {"issue_url": ".../issues/2", "body": "c"},
+        {"body": "no url -> dropped"},
+    ])
+    assert [x["body"] for x in g[1]] == ["a", "b"] and g[2][0]["body"] == "c"
+    assert 0 not in g

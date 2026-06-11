@@ -77,6 +77,13 @@ class GitHub:
     def list_issue_comments(self, repo: str, number: int) -> list[dict]:
         return self._paginate(f"/repos/{repo}/issues/{number}/comments")
 
+    def list_issue_comments_for_repo(self, repo: str) -> list[dict]:
+        """Every issue/PR comment in the repo in ONE paginated sweep (newest
+        first), so the board groups by PR instead of making a separate call per
+        PR — avoids the N-per-PR fan-out that trips GitHub's secondary rate
+        limit. Each comment carries an ``issue_url`` identifying its PR/issue."""
+        return self._paginate(f"/repos/{repo}/issues/comments?sort=created&direction=desc")
+
     def list_open_issues(self, repo: str) -> list[dict]:
         # issues endpoint also returns PRs; filter to true issues by caller need.
         return self._paginate(f"/repos/{repo}/issues?state=open")

@@ -82,6 +82,22 @@ def _signed_in(deps: Deps, cookies: dict) -> bool:
 
 
 # ---- board/inbox assembly ---------------------------------------------------
+def _issue_number(comment: dict) -> int:
+    """PR/issue number a repo-wide comment belongs to, from its ``issue_url``
+    (e.g. .../issues/114). 0 if it can't be parsed."""
+    tail = (comment.get("issue_url") or "").rstrip("/").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else 0
+
+
+def _group_comments_by_pr(comments: list) -> dict:
+    grouped: dict = {}
+    for c in comments:
+        n = _issue_number(c)
+        if n:
+            grouped.setdefault(n, []).append(c)
+    return grouped
+
+
 def _gather(deps: Deps) -> "list[RepoView]":
     """One RepoView per configured repo. A repo that fails to read becomes a
     RepoView with an ``error`` (and no rows) so the rest of the board still
@@ -90,13 +106,16 @@ def _gather(deps: Deps) -> "list[RepoView]":
     for repo in deps.cfg.repos:
         try:
             rows = []
+            # One repo-wide comment sweep, grouped by PR — not a call per PR.
+            comments_by_pr = _group_comments_by_pr(
+                deps.read.list_issue_comments_for_repo(repo))
             for pr in deps.read.list_open_pulls(repo):
                 n = int(pr.get("number", 0))
                 # Labels come back on the pulls payload itself — no extra per-PR
                 # request (the list endpoint already includes them).
                 labels = [l.get("name", "") for l in (pr.get("labels") or [])
                           if isinstance(l, dict)]
-                comments = deps.read.list_issue_comments(repo, n)
+                comments = comments_by_pr.get(n, [])
                 rows.append(build_board_row(repo=repo, pr=pr, labels=labels, comments=comments))
             ledger = deps.read.find_issue_body_by_marker(repo, GLOBAL_SPEND_MARKER)
             total, by = spend_from_ledger(ledger, now_ts=deps.now_ts)
