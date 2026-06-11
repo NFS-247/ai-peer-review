@@ -320,6 +320,7 @@ def _send_escalation(
     spend_breakdown: Optional[dict] = None,
     spent_usd: Optional[float] = None,
     trigger: Optional[EscalationTrigger] = None,
+    unavailable_reviewers: tuple[str, ...] = (),
 ) -> None:
     """Send the escalation email, with a guaranteed PR-comment fallback.
 
@@ -423,6 +424,8 @@ def _send_escalation(
                         signing_secret=cfg.approve_signing_secret or "",
                     ),
                     spend_breakdown=spend_breakdown,
+                    trigger=trigger.value if trigger else "",
+                    unavailable_reviewers=unavailable_reviewers,
                 )
             send_chat_message(cfg.google_chat_webhook_url, card)
         except Exception as exc:  # noqa: BLE001
@@ -489,6 +492,23 @@ def _send_escalation(
 def _now_ts() -> float:
     """Wall-clock UTC timestamp. Module-level so tests can monkeypatch it."""
     return datetime.now(timezone.utc).timestamp()
+
+
+def _trigger_from_value(value: str) -> Optional[EscalationTrigger]:
+    """Parse a stored trigger value back to its enum; None if blank or unknown.
+
+    Lets a deferred (cooldown-fired) escalation carry its original trigger —
+    persisted in the cross-run state — through to _send_escalation, so it gets
+    the same card routing (disagreement vs generic) and plain-language lead as
+    an immediate escalation. Without it, a deferred disagreement silently fell
+    back to the generic card.
+    """
+    if not value:
+        return None
+    try:
+        return EscalationTrigger(value)
+    except ValueError:
+        return None
 
 
 def _record_pending_escalation(
@@ -618,6 +638,7 @@ def _maybe_fire_due_escalation(*, cfg: DispatcherConfig, api: GitHubAPI, pr_numb
     reviewer_summaries = {v.reviewer: f"{v.verdict} (round {v.round})" for v in verdicts}
     reason_short = cross.pending_escalation_reason_short or "reviewers requested changes"
     detail = cross.pending_escalation_detail
+    pending_trigger = _trigger_from_value(cross.pending_escalation_trigger)
 
     label_state.set_escalated(api, pr_number, labels)
     cross.escalated_head_sha = ctx["head_sha"]
@@ -639,6 +660,7 @@ def _maybe_fire_due_escalation(*, cfg: DispatcherConfig, api: GitHubAPI, pr_numb
         ci_status=_ci_status_for(api, ctx["head_sha"]),
         diff_summary="",
         workflow_run_url=os.environ.get("GITHUB_RUN_URL", ""),
+        trigger=pending_trigger,
     )
     return True
 
@@ -1224,6 +1246,7 @@ def _run_review_round(
             spend_breakdown=spend_breakdown,
             spent_usd=daily_total if is_budget_stop else None,
             trigger=decision.trigger,
+            unavailable_reviewers=tuple(required_failed),
         )
 
     return 0

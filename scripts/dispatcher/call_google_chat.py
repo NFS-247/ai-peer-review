@@ -39,6 +39,65 @@ def format_spend_breakdown(breakdown: Mapping[str, float] | None) -> str:
     return " · ".join(f"{_esc(str(name))} ${amount:.2f}" for name, amount in items)
 
 
+# Plain-language lead for the generic escalation card, keyed by EscalationTrigger
+# value (passed as a raw string so this presentation module never imports the
+# escalation logic). The operator sees a human sentence — "a reviewer couldn't
+# finish, take a look" — instead of the engine's internal reason code. The precise
+# reason_short is still kept on the email + PR comment as the durable record.
+_PLAIN_LEAD: dict[str, str] = {
+    "required_reviewer_unavailable":
+        "A reviewer's API didn't answer this round, so this PR can't finish on "
+        "its own. Check that provider below, then send it back another round.",
+    "api_outage":
+        "A reviewer's AI service has been down for a while, so this PR is on hold.",
+    "ci_persistent_failure":
+        "The automated tests keep failing and the fixes aren't sticking — this "
+        "one needs you.",
+    "high_stakes_auto":
+        "This PR changes protected files, so it needs your sign-off before it can "
+        "merge — even though the reviewers are happy.",
+    "suspicious_unanimous":
+        "Every reviewer approved this fast on a high-stakes change. Worth a quick "
+        "gut-check before it goes.",
+}
+_PLAIN_LEAD_FALLBACK = "This PR is stuck and waiting on your decision."
+
+
+def plain_escalation_lead(trigger: str) -> str:
+    """Human one-liner for an escalation trigger; safe fallback for unknowns."""
+    return _PLAIN_LEAD.get(trigger, _PLAIN_LEAD_FALLBACK)
+
+
+# When a reviewer's own API is what's down, the button that makes sense isn't
+# "Open PR" — it's a jump straight to THAT provider's console to check the key,
+# quota, or status. Keyed by reviewer name; values are (button label, console URL).
+_PROVIDER_DASHBOARD: dict[str, tuple[str, str]] = {
+    "claude": ("🔧 Check Claude (Anthropic)", "https://console.anthropic.com/settings/usage"),
+    "gpt": ("🔧 Check GPT (OpenAI)", "https://platform.openai.com/usage"),
+    "gemini": ("🔧 Check Gemini (AI Studio)", "https://aistudio.google.com/"),
+}
+
+
+def _provider_dashboard_buttons(unavailable_reviewers) -> list[dict]:
+    """A 'Check <provider>' button per down reviewer that maps to a known console.
+
+    Deduped and order-stable. An unknown reviewer name is skipped (no button,
+    rather than a wrong link).
+    """
+    seen: set[str] = set()
+    buttons: list[dict] = []
+    for reviewer in unavailable_reviewers or ():
+        key = str(reviewer).strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = _PROVIDER_DASHBOARD.get(key)
+        if entry:
+            label, url = entry
+            buttons.append({"text": label, "onClick": {"openLink": {"url": url}}})
+    return buttons
+
+
 def build_escalation_card(
     *,
     project_name: str,
@@ -51,6 +110,8 @@ def build_escalation_card(
     approve_url: str = "",
     approve_merge_url: str = "",
     spend_breakdown: Mapping[str, float] | None = None,
+    trigger: str = "",
+    unavailable_reviewers: tuple[str, ...] = (),
 ) -> dict:
     """Build a Google Chat cardsV2 payload for an escalation.
 
@@ -60,7 +121,14 @@ def build_escalation_card(
     set it adds a "🚀 Approve & Merge" button (approve, then merge). Both are
     single-tap, no typing. ``spend_breakdown`` (optional), when given, adds a
     "24h spend" line showing per-model cost so a budget-driven escalation says
-    exactly where the money went.
+    exactly where the money went. ``trigger`` (optional), the EscalationTrigger
+    value as a string, swaps the engine's technical ``reason_short`` for a
+    plain-language lead (see ``plain_escalation_lead``) in the body + subtitle;
+    omit it to keep the literal reason (back-compatible default).
+    ``unavailable_reviewers`` (optional) adds a "Check <provider>" button linking
+    straight to each down reviewer's API console (gemini→AI Studio, claude→
+    Anthropic, gpt→OpenAI) — the action that matches "a reviewer couldn't be
+    reached".
     """
     reviewer_lines = "  •  ".join(
         f"{name}: {summary}" for name, summary in reviewer_summaries.items()
@@ -81,9 +149,16 @@ def build_escalation_card(
     spend_line = format_spend_breakdown(spend_breakdown)
     spend_html = f"<b>24h spend:</b> {spend_line}<br>" if spend_line else ""
 
+    # Plain-language lead when the caller passes the trigger; otherwise fall back
+    # to the literal engine reason (keeps existing callers/tests unchanged).
+    why_html = (
+        f"{_esc(plain_escalation_lead(trigger))}<br>"
+        if trigger
+        else f"<b>Why:</b> {_esc(reason_short)}<br>"
+    )
     body = (
         f"<b>{_esc(pr_title)}</b><br>"
-        f"<b>Why:</b> {_esc(reason_short)}<br>"
+        f"{why_html}"
         f"<b>Reviewers:</b> {_esc(reviewer_lines)}<br>"
         f"{spend_html}<br>"
         f"{instructions}"
@@ -98,6 +173,10 @@ def build_escalation_card(
         buttons.append(
             {"text": "🚀 Approve & Merge", "onClick": {"openLink": {"url": approve_merge_url}}}
         )
+    # If a reviewer's own API is the thing that's down, jump straight to its
+    # provider console (check key/quota/status) — placed before "Open PR" so the
+    # action that matches the message is the first thing under the buttons.
+    buttons.extend(_provider_dashboard_buttons(unavailable_reviewers))
     buttons.append(
         {"text": f"Open PR #{pr_number}", "onClick": {"openLink": {"url": pr_url}}}
     )
@@ -109,7 +188,7 @@ def build_escalation_card(
                 "card": {
                     "header": {
                         "title": f"{project_name}: PR #{pr_number} needs you",
-                        "subtitle": f"tier: {tier} · {reason_short}",
+                        "subtitle": f"tier: {tier}" if trigger else f"tier: {tier} · {reason_short}",
                     },
                     "sections": [
                         {
@@ -261,11 +340,11 @@ def build_budget_escalation_card(
     title_html = f"<b>{_esc(pr_title)}</b><br>" if pr_title else ""
     body = (
         f"{title_html}"
-        "<b>Reviews paused — 24h spend ceiling reached.</b><br>"
+        "<b>Reviews paused — this repo hit its daily spending limit.</b><br>"
         f"Used <b>${spent_usd:.2f}</b> of the <b>${ceiling_usd:.2f}</b> daily "
         "AI-review budget.<br>"
         f"{spend_html}"
-        "Raise the ceiling to resume, or leave it to stay paused. Approve/merge "
+        "Raise the limit to resume, or leave it to stay paused. Approve/merge "
         "is intentionally hidden — this is a budget stop, not a review (reviewers "
         "may not have run)."
     )
@@ -283,7 +362,7 @@ def build_budget_escalation_card(
                 "cardId": f"budget-escalation-pr-{pr_number}",
                 "card": {
                     "header": {
-                        "title": f"{project_name}: daily spend ceiling reached",
+                        "title": f"{project_name}: spending paused (daily limit reached)",
                         "subtitle": (
                             f"${spent_usd:.2f} / ${ceiling_usd:.2f} · PR #{pr_number} paused"
                         ),

@@ -39,6 +39,23 @@ def test_succeeds_first_try():
     assert slept == []  # no backoff needed
 
 
+def test_default_read_timeout_is_generous_and_passed_through():
+    # claude + gemini call request_json_with_retry WITHOUT an explicit timeout, so
+    # the shared default IS their read window. It must be the generous 300s (the
+    # GPT client's default), not the old 120s that reported a slow-but-healthy
+    # reviewer on a large diff as "unavailable" and escalated a false alarm.
+    assert A.DEFAULT_READ_TIMEOUT == 300
+    seen = {}
+
+    def fake_urlopen(req, timeout=0):
+        seen["timeout"] = timeout
+        return _Resp()
+
+    with mock.patch.object(A.urllib.request, "urlopen", fake_urlopen):
+        A.request_json_with_retry(object(), provider="gemini")
+    assert seen["timeout"] == 300
+
+
 def test_retries_429_then_succeeds():
     calls = []
     slept = []
