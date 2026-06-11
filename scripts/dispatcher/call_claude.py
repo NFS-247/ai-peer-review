@@ -49,8 +49,14 @@ class ClaudeClient(AIClient):
                 "anthropic-version": "2023-06-01",
             },
         )
+        # timeout_retries=0 is explicit, not just the default: a reviewer read
+        # timeout must never be retried — there's no idempotency key here, so a
+        # retry could double-bill if the model already produced the (lost) reply.
         payload = request_json_with_retry(
-            req, provider="Anthropic", timeout=REVIEWER_READ_TIMEOUT
+            req,
+            provider="Anthropic",
+            timeout=REVIEWER_READ_TIMEOUT,
+            timeout_retries=0,
         )
 
         text = ""

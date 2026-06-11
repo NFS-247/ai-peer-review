@@ -329,7 +329,10 @@ def _send_escalation(
     is the 24h per-model spend, surfaced on the Chat card for budget escalations.
     ``trigger`` selects the Chat card: a ``DAILY_COST_SPIKE`` budget stop gets a
     financial card (Increase limit, no Approve/Merge); everything else gets the
-    standard approval card.
+    standard approval card. ``unavailable_reviewers`` is only meaningful for a
+    ``REQUIRED_REVIEWER_UNAVAILABLE`` stop (the caller gates it to that trigger):
+    it adds a "Check <provider>" console button per down reviewer to the standard
+    card so the operator can check that provider's key/quota/status.
     """
     body_text = build_escalation_email(
         project_name=cfg.project_name,

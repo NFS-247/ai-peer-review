@@ -64,7 +64,13 @@ _PLAIN_LEAD_FALLBACK = "This PR is stuck and waiting on your decision."
 
 
 def plain_escalation_lead(trigger: str) -> str:
-    """Human one-liner for an escalation trigger; safe fallback for unknowns."""
+    """Human one-liner for an escalation trigger; safe fallback for unknowns.
+
+    The fallback is for direct/defensive callers. build_escalation_card does NOT
+    rely on it: it swaps in this lead only for a RECOGNIZED trigger (``trigger in
+    _PLAIN_LEAD``) and otherwise keeps the literal ``reason_short``, so an
+    unexpected trigger never hides its diagnostics behind a generic line.
+    """
     return _PLAIN_LEAD.get(trigger, _PLAIN_LEAD_FALLBACK)
 
 
