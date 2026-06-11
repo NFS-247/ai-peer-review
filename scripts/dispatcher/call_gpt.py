@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
+import uuid
 
 from .ai_client import AIClient, AIResponse, request_json_with_retry
 from .pricing import token_cost
@@ -73,6 +74,11 @@ class GPTClient(AIClient):
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._api_key}",
+                # All retries (429 + read-timeout) reuse this same Request, so a
+                # per-call Idempotency-Key lets OpenAI dedupe a retried-but-
+                # already-processed generation — billed once, not twice (closes
+                # the double-charge window the bounded timeout-retry would open).
+                "Idempotency-Key": f"air-{uuid.uuid4()}",
             },
         )
         payload = request_json_with_retry(

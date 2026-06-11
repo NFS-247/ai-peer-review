@@ -66,23 +66,37 @@ def request_json_with_retry(
     would fail the round outright — exactly how gpt (the longest reviews)
     intermittently lost rounds while claude/gemini finished. It gets up to
     ``timeout_retries`` extra attempt(s) after a short ``timeout_backoff`` before
-    the reviewer is declared unavailable. As with the 5xx case the request may
-    already be in flight server-side, so this retry is deliberately small and
-    bounded: a rare double-charge is the accepted cost of not losing a required
-    reviewer to one slow round.
+    the reviewer is declared unavailable. A read timeout carries the same
+    in-flight risk that makes 5xx non-retryable (the request may already be
+    processing server-side), so the retry is deliberately small and bounded;
+    a token-billed caller (the OpenAI client) sends an ``Idempotency-Key`` so a
+    retried-but-already-processed request is de-duplicated and billed once, not
+    twice.
+
+    The timeout budget is independent from the ``max_attempts`` (429/URLError)
+    budget: a read timeout does not consume an ``attempt`` or shift its backoff
+    index, so a slow generation can never quietly eat the transient-failure
+    budget.
 
     Every wait is capped at ``max_delay`` seconds — including a server-sent
     ``Retry-After`` — so a buggy or hostile upstream (e.g. ``Retry-After:
     86400``) can never stall the job; the round fails fast and escalates.
     """
-    timeouts_seen = 0
+    # Two independent budgets: ``attempt`` covers retryable HTTP (429/503) and
+    # URLError transient failures; ``timeouts_seen`` covers read timeouts. A
+    # timeout does NOT touch ``attempt`` (nor its backoff index), so a slow
+    # generation can't quietly eat the 429/URLError budget. The loop is bounded
+    # by the sum of both budgets — a hard backstop so it can never spin even if a
+    # future branch grows an ungated ``continue``; in normal operation a branch
+    # always raises or hits its own budget first.
     attempt = 0
-    while True:
-        attempt += 1
+    timeouts_seen = 0
+    for _ in range(max_attempts + timeout_retries):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
+            attempt += 1
             detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
             if exc.code in RETRYABLE_STATUS and attempt < max_attempts:
                 delay = _retry_after_seconds(exc)
@@ -105,12 +119,17 @@ def request_json_with_retry(
                 f"(retried {timeouts_seen}x)"
             ) from exc
         except urllib.error.URLError as exc:
+            attempt += 1
             if attempt < max_attempts:
                 sleep(min(base_delay * (2 ** (attempt - 1)), max_delay))
                 continue
             raise RuntimeError(
                 f"{provider} API request failed: {exc.reason}"
             ) from exc
+    raise RuntimeError(
+        f"{provider} API: retries exhausted "
+        f"({attempt} transient attempts, {timeouts_seen} timeouts)"
+    )
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,7 @@ def test_gpt_discounts_cached_tokens(monkeypatch):
         },
     }
     monkeypatch.setattr(
-        call_gpt, "request_json_with_retry", lambda req, provider, timeout=None: payload
+        call_gpt, "request_json_with_retry", lambda req, provider, timeout: payload
     )
     resp = call_gpt.GPTClient(api_key="k", model="gpt-5").review("p")
     # 200k fresh + 800k cached(0.5x) at $1.25/M input.
@@ -72,7 +72,7 @@ def test_no_cache_fields_is_plain_cost(monkeypatch):
         "usage": {"prompt_tokens": 40_000, "completion_tokens": 1_000},
     }
     monkeypatch.setattr(
-        call_gpt, "request_json_with_retry", lambda req, provider, timeout=None: payload
+        call_gpt, "request_json_with_retry", lambda req, provider, timeout: payload
     )
     resp = call_gpt.GPTClient(api_key="k", model="gpt-5").review("p")
     assert resp.cost_usd == round((40_000 * 1.25 + 1_000 * 10.0) / 1_000_000, 6)
@@ -149,3 +149,19 @@ def test_gpt_read_timeout_bad_env_falls_back(monkeypatch):
     monkeypatch.setattr(call_gpt, "request_json_with_retry", fake)
     call_gpt.GPTClient(api_key="k", model="gpt-5").review("p")
     assert captured["timeout"] == call_gpt.DEFAULT_READ_TIMEOUT
+
+
+def test_gpt_sends_idempotency_key_for_safe_retry(monkeypatch):
+    # Retries (429 or read-timeout) reuse the same Request, so an Idempotency-Key
+    # lets OpenAI dedupe a retried-but-already-processed generation — billed once,
+    # not twice. Pin that the header is present and well-formed.
+    captured = {}
+
+    def fake(req, provider, timeout):
+        captured["key"] = req.get_header("Idempotency-key")
+        return _gpt_ok_payload()
+
+    monkeypatch.setattr(call_gpt, "request_json_with_retry", fake)
+    call_gpt.GPTClient(api_key="k", model="gpt-5").review("p")
+    assert captured["key"]
+    assert captured["key"].startswith("air-")

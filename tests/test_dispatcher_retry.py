@@ -235,3 +235,31 @@ def test_timeout_backoff_capped_at_max_delay():
             sleep=slept.append,
         )
     assert slept == [60.0]
+
+
+def test_timeout_does_not_consume_urlerror_budget():
+    # Budget separation: a read timeout must not reduce the 429/URLError attempt
+    # budget or shift its exponential-backoff index. One timeout followed by
+    # URLErrors must still get the FULL max_attempts budget with an unshifted
+    # backoff schedule (exponent starting at 0, not bumped by the timeout).
+    calls = []
+    slept = []
+
+    def fake_urlopen(req, timeout=0):
+        calls.append(1)
+        if len(calls) == 1:
+            raise TimeoutError("read timed out")        # one timeout first
+        raise urllib.error.URLError("connection refused")  # then URLErrors
+
+    with mock.patch.object(A.urllib.request, "urlopen", fake_urlopen):
+        with pytest.raises(RuntimeError) as ei:
+            A.request_json_with_retry(
+                object(), provider="X", max_attempts=4, base_delay=1.0,
+                timeout_backoff=0.5, sleep=slept.append,
+            )
+    assert "request failed" in str(ei.value)        # exhausted the URLError budget
+    # 1 timeout + a full 4-attempt URLError budget = 5 urlopen calls.
+    assert len(calls) == 5
+    # Backoff: the timeout's own short backoff, then URLError 1x/2x/4x — the
+    # URLError exponent is NOT shifted by the preceding timeout.
+    assert slept == [0.5, 1.0, 2.0, 4.0]
