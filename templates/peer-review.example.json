@@ -4,6 +4,9 @@
   "project_name": "Vendor Intelligence",
   "operator_github_login": "NERT24",
 
+  "_email_from_comment": "Verified Resend sender for escalation emails. REQUIRED for email to work: it must be an address on a domain verified in your Resend account. Without it, the default sender can't deliver and emails fall back to a PR comment.",
+  "email_from": "Vendor Intelligence Alerts <alerts@yourdomain.com>",
+
   "high_stakes_paths": [
     "src/billing/**",
     "src/auth/**",

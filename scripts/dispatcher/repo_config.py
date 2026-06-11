@@ -53,6 +53,12 @@ class RepoConfig:
 
     project_name: str = ""
     operator_github_login: str = "NERT24"
+    # Verified Resend sender for escalation emails, e.g.
+    # "Project Alerts <alerts@yourdomain.com>". MUST be an address on a domain
+    # verified in your Resend account — the default onboarding@resend.dev sender
+    # only delivers to the Resend account's own email, so leaving this empty
+    # makes every escalation email fail (the PR-comment fallback still fires).
+    email_from: str = ""
 
     # Domain context injected into the reviewer prompt so reviews are tailored
     # per tenant instead of hard-coded to one project. project_description is a
@@ -117,6 +123,7 @@ class RepoConfig:
         return {
             "project_name": self.project_name,
             "operator_github_login": self.operator_github_login,
+            "email_from": self.email_from,
             "project_description": self.project_description,
             "review_guidance": list(self.review_guidance),
             "high_stakes_paths": list(self.high_stakes_paths),
@@ -164,6 +171,7 @@ _STR_TUPLE_FIELDS = {
 _STR_FIELDS = {
     "project_name",
     "operator_github_login",
+    "email_from",
     "project_description",
     "billing_mode",
     "claude_model",
