@@ -53,14 +53,19 @@ input[type=text]{padding:5px 8px;border:1px solid #d0d7de;border-radius:6px}
 """
 
 
-def _layout(title: str, body: str) -> str:
+def _layout(title: str, body: str, *, signed_in: bool = False, refresh: int = 0) -> str:
+    meta_refresh = f"<meta http-equiv='refresh' content='{int(refresh)}'>" if refresh else ""
+    auth = (
+        "<a href='/logout'>Sign out</a>" if signed_in
+        else "<a href='/login'>Sign in</a>"
+    )
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
-        f"<title>{escape(title)}</title><style>{_CSS}</style></head><body>"
+        f"{meta_refresh}<title>{escape(title)}</title><style>{_CSS}</style></head><body>"
         "<header><strong>Front Door</strong>"
         "<a href='/'>Projects</a><a href='/inbox'>Approvals</a>"
-        "<span style='flex:1'></span><span class='meta' style='color:#c9d1d9'>"
-        "AI peer-review platform</span></header>"
+        "<span style='flex:1'></span>"
+        f"{auth}</header>"
         f"<main>{body}</main></body></html>"
     )
 
@@ -90,10 +95,11 @@ def _spend_line(spend: ProjectSpend) -> str:
     return f"<span class='meta'>24h spend: ${spend.total_24h_usd:.2f}{extra}</span>"
 
 
-def board_page(grouped: "list[tuple[str, list[BoardRow], ProjectSpend]]") -> str:
+def board_page(grouped: "list[tuple[str, list[BoardRow], ProjectSpend]]",
+               *, signed_in: bool = False) -> str:
     if not grouped:
         body = "<div class='empty'>No projects configured. Set <code>FRONT_DOOR_REPOS</code>.</div>"
-        return _layout("Projects", body)
+        return _layout("Projects", body, signed_in=signed_in)
     cards = []
     for repo, rows, spend in grouped:
         if rows:
@@ -101,9 +107,22 @@ def board_page(grouped: "list[tuple[str, list[BoardRow], ProjectSpend]]") -> str
         else:
             row_html = "<div class='empty'>No open PRs.</div>"
         cards.append(
-            f"<div class='card'><h2><span>{escape(repo)}</span>{_spend_line(spend)}</h2>{row_html}</div>"
+            f"<div class='card'><h2><span>{escape(repo)} {_health(rows)}</span>"
+            f"{_spend_line(spend)}</h2>{row_html}</div>"
         )
-    return _layout("Projects", "".join(cards))
+    return _layout("Projects", "".join(cards), signed_in=signed_in, refresh=30)
+
+
+def _health(rows: "list[BoardRow]") -> str:
+    """Compact per-repo status rollup, e.g. '2 reviewing · 1 escalated'."""
+    if not rows:
+        return ""
+    counts: dict = {}
+    for r in rows:
+        counts[r.status] = counts.get(r.status, 0) + 1
+    order = [STATUS_ESCALATED, STATUS_READY, STATUS_REVIEWING, STATUS_PAUSED, STATUS_SECRET_MISSING]
+    parts = [f"{counts[s]} {s}" for s in order if s in counts]
+    return f"<span class='meta' style='font-weight:400'>({' · '.join(parts)})</span>" if parts else ""
 
 
 def _board_row(r: BoardRow) -> str:
@@ -120,18 +139,21 @@ def _board_row(r: BoardRow) -> str:
     )
 
 
-def inbox_page(items: "Iterable[InboxItem]") -> str:
+def inbox_page(items: "Iterable[InboxItem]", *, signed_in: bool = False, csrf: str = "") -> str:
     items = list(items)
     if not items:
         return _layout("Approvals", "<div class='card'><div class='empty'>"
-                       "Nothing waiting on you. 🎉</div></div>")
-    rows = "".join(_inbox_row(it) for it in items)
+                       "Nothing waiting on you. 🎉</div></div>", signed_in=signed_in, refresh=30)
+    rows = "".join(_inbox_row(it, csrf) for it in items)
     note = ("<div class='note'>Actions post an <b>OPERATOR</b> command as you. "
             "Approve marks the PR ready — you still click merge on GitHub.</div>")
-    return _layout("Approvals", note + f"<div class='card'>{rows}</div>")
+    return _layout("Approvals", note + f"<div class='card'>{rows}</div>",
+                   signed_in=signed_in, refresh=30)
 
 
-def _inbox_row(it: InboxItem) -> str:
+def _inbox_row(it: InboxItem, csrf: str = "") -> str:
+    csrf_field = f"<input type='hidden' name='csrf' value='{escape(csrf)}'>" if csrf else ""
+
     def form(action: str, label: str, cls: str = "", text_field: bool = False) -> str:
         ti = ("<input type='text' name='text' placeholder='reason/note' "
               "style='width:160px'>") if text_field else ""
@@ -141,7 +163,7 @@ def _inbox_row(it: InboxItem) -> str:
             f"<input type='hidden' name='repo' value='{escape(it.repo)}'>"
             f"<input type='hidden' name='number' value='{it.number}'>"
             f"<input type='hidden' name='action' value='{action}'>"
-            f"{ti}<button{c}>{escape(label)}</button></form> "
+            f"{csrf_field}{ti}<button{c}>{escape(label)}</button></form> "
         )
     actions = (
         form("approve", "✓ Approve")
@@ -159,8 +181,9 @@ def _inbox_row(it: InboxItem) -> str:
     )
 
 
-def message_page(title: str, html_body: str) -> str:
-    return _layout(title, f"<div class='card'><div style='padding:14px'>{html_body}</div></div>")
+def message_page(title: str, html_body: str, *, signed_in: bool = False) -> str:
+    return _layout(title, f"<div class='card'><div style='padding:14px'>{html_body}</div></div>",
+                   signed_in=signed_in)
 
 
 __all__ = ["board_page", "inbox_page", "message_page"]

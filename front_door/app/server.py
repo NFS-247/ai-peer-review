@@ -1,7 +1,11 @@
 """Stdlib http.server adapter — the only socket-facing module.
 
 Translates HTTP <-> the pure ``route()``. Swap this for FastAPI/Next.js later;
-the tested core (viewmodels/commands/router) is unchanged.
+the tested core (viewmodels/commands/router/sessions/oauth) is unchanged.
+
+The session store and OAuth client are created ONCE per process and shared
+across requests (sessions must persist between the login redirect and later
+actions); ``make_deps`` builds a per-request ``Deps`` around them.
 """
 
 from __future__ import annotations
@@ -11,33 +15,38 @@ import urllib.parse
 from http import cookies as http_cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import config as config_mod
 from .gh import GitHub
+from .oauth import OAuth
 from .router import Deps, route
+from .sessions import SID_COOKIE, SessionStore
 
 
-def _operator_client_factory(cfg):
+def _operator_client_factory(cfg, sessions):
     """Return ``(cookies) -> operator GitHub client | None``.
 
-    Dev: a configured FRONT_DOOR_DEV_TOKEN is the operator identity. Prod: map a
-    session cookie set by the GitHub OAuth callback to that user's token — wire
-    it here (look up cookies['session'] -> stored token). Returns None when there
-    is no operator identity, so the router asks the user to sign in.
+    Prefer the OAuth session token (the user's own identity); fall back to the
+    dev operator token for local dev. None when neither exists -> the router
+    asks the user to sign in.
     """
     def factory(cookies: dict):
-        # TODO(prod): cookies['session'] -> OAuth-stored token for this user.
+        if sessions is not None:
+            token = sessions.token_for(cookies.get(SID_COOKIE))
+            if token:
+                return GitHub(token, api_base=cfg.api_base)
         if cfg.dev_operator_token:
             return GitHub(cfg.dev_operator_token, api_base=cfg.api_base)
         return None
     return factory
 
 
-def make_deps(cfg, *, now_ts=None) -> Deps:
+def make_deps(cfg, *, now_ts=None, sessions=None, oauth=None) -> Deps:
     return Deps(
         read=GitHub(cfg.read_token, api_base=cfg.api_base),
-        operator_client=_operator_client_factory(cfg),
+        operator_client=_operator_client_factory(cfg, sessions),
         cfg=cfg,
         now_ts=now_ts if now_ts is not None else time.time(),
+        sessions=sessions,
+        oauth=oauth,
     )
 
 
@@ -51,19 +60,22 @@ def _parse_cookies(header: str) -> dict:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    cfg = None  # set by serve()
+    cfg = None        # set by serve()
+    sessions = None   # shared SessionStore
+    oauth = None      # shared OAuth
 
     def _dispatch(self, method: str):
         parsed = urllib.parse.urlsplit(self.path)
+        query = {k: v[-1] for k, v in urllib.parse.parse_qs(parsed.query).items()}
         cookies = _parse_cookies(self.headers.get("Cookie", ""))
         form: dict = {}
         if method == "POST":
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length).decode("utf-8") if length else ""
             form = {k: v[-1] for k, v in urllib.parse.parse_qs(raw).items()}
-        deps = make_deps(self.cfg)
+        deps = make_deps(self.cfg, sessions=self.sessions, oauth=self.oauth)
         try:
-            resp = route(method, parsed.path, cookies=cookies, form=form, deps=deps)
+            resp = route(method, parsed.path, cookies=cookies, form=form, deps=deps, query=query)
         except Exception as exc:  # noqa: BLE001 - never leak a stack trace
             self.send_error(500, f"internal error: {type(exc).__name__}")
             return
@@ -89,8 +101,12 @@ class _Handler(BaseHTTPRequestHandler):
 
 def serve(cfg) -> None:
     _Handler.cfg = cfg
+    _Handler.sessions = SessionStore()
+    _Handler.oauth = OAuth(cfg.oauth_client_id, cfg.oauth_client_secret, scope=cfg.oauth_scope)
     httpd = ThreadingHTTPServer((cfg.host, cfg.port), _Handler)
-    print(f"Front Door on http://{cfg.host}:{cfg.port}  (repos: {', '.join(cfg.repos) or 'none'})")
+    mode = "OAuth" if cfg.oauth_enabled() else ("dev-token" if cfg.dev_operator_token else "read-only")
+    print(f"Front Door on http://{cfg.host}:{cfg.port}  "
+          f"(repos: {', '.join(cfg.repos) or 'none'}; auth: {mode})")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

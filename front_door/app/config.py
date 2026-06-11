@@ -21,6 +21,20 @@ class Config:
     api_base: str = "https://api.github.com"
     host: str = "127.0.0.1"
     port: int = 8000
+    # GitHub OAuth (prod write path). When unset, the app falls back to the dev
+    # operator token. public_base_url is the externally reachable origin used to
+    # build the OAuth callback (public_base_url + /auth/callback).
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
+    oauth_scope: str = "repo"
+    public_base_url: str = ""
+
+    def redirect_uri(self) -> str:
+        base = self.public_base_url.rstrip("/") or f"http://{self.host}:{self.port}"
+        return f"{base}/auth/callback"
+
+    def oauth_enabled(self) -> bool:
+        return bool(self.oauth_client_id and self.oauth_client_secret)
 
 
 def _split_repos(raw: str) -> tuple:
@@ -38,6 +52,10 @@ def load(env: Optional[dict] = None) -> Config:
         api_base=(e.get("GITHUB_API_BASE") or "https://api.github.com").strip(),
         host=(e.get("FRONT_DOOR_HOST") or "127.0.0.1").strip(),
         port=int(e.get("FRONT_DOOR_PORT") or "8000"),
+        oauth_client_id=(e.get("GITHUB_OAUTH_CLIENT_ID") or "").strip(),
+        oauth_client_secret=(e.get("GITHUB_OAUTH_CLIENT_SECRET") or "").strip(),
+        oauth_scope=(e.get("FRONT_DOOR_OAUTH_SCOPE") or "repo").strip(),
+        public_base_url=(e.get("FRONT_DOOR_PUBLIC_URL") or "").strip(),
     )
 
 
