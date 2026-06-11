@@ -15,6 +15,7 @@ from scripts.dispatcher import email_send, main
 from scripts.dispatcher.config import REPO_CONFIG_PATH_ENV, load_from_env
 from scripts.dispatcher.converge import CIStatus
 from scripts.dispatcher.email_send import DEFAULT_FROM, EmailMessage, ResendClient
+from scripts.dispatcher.redact import clear_registered, register_secret
 from scripts.dispatcher.repo_config import from_mapping
 
 
@@ -133,3 +134,44 @@ def test_post_fallback_comment_never_raises():
     # The last-resort channel must not blow up the run if GitHub also rejects it.
     api = _FakeAPI(fail_post=True)
     assert main._post_fallback_comment(api, 7, "body") is False
+
+
+def test_fallback_redacts_registered_secret_locally(tmp_path):
+    # _FakeAPI does NOT redact, so this proves the *local* redact() in
+    # _send_escalation scrubs the error before it reaches the comment body —
+    # defense in depth, not relying on post_comment's redaction.
+    clear_registered()
+    register_secret("MYSECRETTOKENVALUE")  # registered-only (not key-shaped)
+    try:
+        cfg = _cfg({"RESEND_API_KEY": "rk", "OPERATOR_EMAIL": "op@x.com"}, tmp_path)
+        api = _FakeAPI()
+
+        class _Boom:
+            def __init__(self, key): pass
+            def send(self, msg):
+                raise RuntimeError("Resend API HTTP 401: bad key MYSECRETTOKENVALUE")
+
+        with mock.patch.object(main, "ResendClient", _Boom):
+            _escalate(cfg, api)
+        body = api.comments[0][1]
+        assert "MYSECRETTOKENVALUE" not in body
+        assert "[REDACTED]" in body
+    finally:
+        clear_registered()
+
+
+def test_no_email_message_names_the_missing_input(tmp_path):
+    # operator set, key missing -> names RESEND_API_KEY
+    api = _FakeAPI()
+    _escalate(_cfg({"OPERATOR_EMAIL": "op@x.com"}, tmp_path), api)
+    assert "RESEND_API_KEY not set" in api.comments[0][1]
+
+    # key set, operator missing -> names OPERATOR_EMAIL (no longer mislabeled)
+    api = _FakeAPI()
+    _escalate(_cfg({"RESEND_API_KEY": "rk"}, tmp_path), api)
+    assert "OPERATOR_EMAIL not set" in api.comments[0][1]
+
+    # neither -> generic
+    api = _FakeAPI()
+    _escalate(_cfg({}, tmp_path), api)
+    assert "no email configured" in api.comments[0][1]

@@ -286,9 +286,12 @@ def _post_fallback_comment(api: GitHubAPI, pr_number: int, body: str) -> bool:
         api.post_comment(pr_number, body)
         return True
     except Exception as exc:  # noqa: BLE001
+        # Redact before printing: this bypasses post_comment's redaction, so an
+        # upstream error echoing a header/token must still be scrubbed from CI logs.
         print(
             f"CRITICAL: escalation fallback comment failed on PR #{pr_number} "
-            f"({type(exc).__name__}: {exc}). The operator may not have been notified.",
+            f"({redact(f'{type(exc).__name__}: {exc}')}). "
+            f"The operator may not have been notified.",
             file=sys.stderr,
         )
         return False
@@ -386,7 +389,9 @@ def _send_escalation(
         except Exception as exc:  # noqa: BLE001
             # Surface the actual Resend error (e.g. the 403 you get when sending
             # from the default onboarding@resend.dev to a non-account address) so
-            # the misconfig is self-diagnosing, not an opaque RuntimeError.
+            # the misconfig is self-diagnosing, not an opaque RuntimeError. Redact
+            # locally too — defense in depth, not relying solely on post_comment.
+            detail = redact(str(exc))[:300]
             hint = ""
             if not cfg.email_from:
                 hint = (
@@ -399,19 +404,26 @@ def _send_escalation(
                 api,
                 pr_number,
                 f"⚠ Escalation email failed to send "
-                f"(`{type(exc).__name__}`: {str(exc)[:300]}). Posting the "
+                f"(`{type(exc).__name__}`: {detail}). Posting the "
                 f"escalation here as fallback so it is never silently lost."
                 f"{hint}\n\n@{cfg.operator_github_login}\n\n```\n{body_text}\n```",
             )
             return
 
     if not emailed:
-        # No email configured at all: PR-comment fallback so the operator is
-        # still notified.
+        # Email path not taken: PR-comment fallback so the operator is still
+        # notified. Name the missing piece so a half-configured setup (e.g. key
+        # set but recipient missing) is not mislabeled "no email configured".
+        if not cfg.resend_api_key and not cfg.operator_email:
+            why = "no email configured"
+        elif not cfg.resend_api_key:
+            why = "RESEND_API_KEY not set"
+        else:
+            why = "OPERATOR_EMAIL not set"
         _post_fallback_comment(
             api,
             pr_number,
-            f"📣 Escalation (no email configured). "
+            f"📣 Escalation ({why}). "
             f"@{cfg.operator_github_login}\n\n```\n{body_text}\n```",
         )
 
