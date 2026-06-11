@@ -1,0 +1,62 @@
+# Self-review: the dispatcher engine reviews its OWN pull requests with all
+# three brains (Claude/GPT/Gemini), pinned to the published @v2 ref so a stable
+# engine reviews proposed changes to the engine. Config: ../.peer-review.json.
+#
+# Requires these repo/org secrets to be set on THIS repo: ANTHROPIC_API_KEY,
+# OPENAI_API_KEY, GEMINI_API_KEY, DISPATCHER_VERDICT_SECRET (a long random
+# string unique to this repo). Optional: GOOGLE_CHAT_WEBHOOK_URL, OPERATOR_*,
+# RESEND_API_KEY, APPROVE_*.
+
+name: AI Peer Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+  check_run:
+    types: [completed]
+  schedule:
+    - cron: "*/5 * * * *"   # cheap cooldown sweep only; no AI calls
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+  checks: read
+
+concurrency:
+  group: ai-peer-review-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      github.event_name == 'check_run' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+    steps:
+      # Check out THIS repo's default branch (trusted) so the dispatcher reads
+      # the base-branch .peer-review.json — never the PR head.
+      - name: Checkout base branch (never PR head)
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11  # v4.1.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Run AI peer review
+        uses: NFS-247/ai-peer-review@v2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          resend_api_key: ${{ secrets.RESEND_API_KEY }}
+          operator_email: ${{ secrets.OPERATOR_EMAIL }}
+          operator_github_login: ${{ secrets.OPERATOR_GITHUB_LOGIN }}
+          dispatcher_verdict_secret: ${{ secrets.DISPATCHER_VERDICT_SECRET }}
+          google_chat_webhook_url: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+          approve_webapp_url: ${{ secrets.APPROVE_WEBAPP_URL }}
+          approve_signing_secret: ${{ secrets.APPROVE_SIGNING_SECRET }}
