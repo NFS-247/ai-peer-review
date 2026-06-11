@@ -302,6 +302,94 @@ def build_budget_escalation_card(
     }
 
 
+def build_disagreement_card(
+    *,
+    project_name: str,
+    pr_number: int,
+    pr_url: str,
+    pr_title: str,
+    tier: str,
+    reason_short: str,
+    reviewer_summaries: Mapping[str, str],
+    approve_url: str = "",
+) -> dict:
+    """Card for a reviewers-couldn't-converge escalation (a deadlock).
+
+    The PR HAS been reviewed but the panel didn't agree (hard round cap, dissent
+    past the round budget, or per-PR cost without converging). Unlike a budget
+    stop, this IS an approval moment — so the card shows WHO is split and offers
+    the tie-breaker: Approve & mark ready (override the holdouts), or Open PR to
+    read the concerns and reply OPERATOR INVESTIGATE/BLOCK. Approve is a legitimate
+    override here precisely because the reviewers ran.
+    """
+    # Bucket reviewers by verdict. A reviewer that errored / only commented / has
+    # no verdict must NOT be shown as "want changes" — on a human-override card,
+    # mislabeling who's blocking drives the wrong decision. Sort each bucket so the
+    # output never depends on the caller's mapping order.
+    buckets: dict[str, list[str]] = {"approve": [], "block": [], "other": []}
+    for name, verdict in reviewer_summaries.items():
+        # Summaries arrive as "<verdict> (round N)" — match the leading verdict
+        # TOKEN exactly. Substring matching would mis-bucket ("disapprove" contains
+        # "approve"); full-string equality would miss the "(round N)" suffix.
+        token = str(verdict).strip().lower().split(" ", 1)[0]
+        if token == "approve":
+            buckets["approve"].append(name)
+        elif token in ("request_changes", "block"):
+            buckets["block"].append(name)
+        else:
+            buckets["other"].append(name)
+    parts = []
+    if buckets["approve"]:
+        parts.append(f"✅ approve: {_esc(', '.join(sorted(buckets['approve'])))}")
+    if buckets["block"]:
+        parts.append(f"✋ want changes: {_esc(', '.join(sorted(buckets['block'])))}")
+    if buckets["other"]:
+        parts.append(f"❔ no clear verdict: {_esc(', '.join(sorted(buckets['other'])))}")
+    # The blank-line separator lives inside split_html, so there's no stray break
+    # when there are no parts.
+    split_html = f"{'  ·  '.join(parts)}<br><br>" if parts else ""
+
+    body = (
+        f"<b>{_esc(pr_title)}</b><br>"
+        f"<b>Reviewers couldn't agree</b> — {_esc(reason_short)}.<br>"
+        f"{split_html}"
+        "Your call: <b>Approve</b> to override and mark ready, or open the PR to "
+        "read the concerns and reply <b>OPERATOR INVESTIGATE &lt;note&gt;</b> "
+        "(send back) or <b>OPERATOR BLOCK</b>."
+    )
+
+    buttons = []
+    if approve_url:
+        buttons.append(
+            {"text": "✅ Approve & mark ready", "onClick": {"openLink": {"url": approve_url}}}
+        )
+    buttons.append(
+        {"text": f"Open PR #{pr_number}", "onClick": {"openLink": {"url": pr_url}}}
+    )
+
+    return {
+        "cardsV2": [
+            {
+                "cardId": f"disagreement-pr-{pr_number}",
+                "card": {
+                    "header": {
+                        "title": f"{_esc(project_name)}: PR #{pr_number} — reviewers split",
+                        "subtitle": f"tier: {_esc(tier)} · {_esc(reason_short)}",
+                    },
+                    "sections": [
+                        {
+                            "widgets": [
+                                {"textParagraph": {"text": body}},
+                                {"buttonList": {"buttons": buttons}},
+                            ]
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+
 def sign_action(secret: str, *, repo: str, pr_number: int, action: str) -> str:
     """HMAC-SHA256 hex over the canonical ``repo:pr:action`` string.
 

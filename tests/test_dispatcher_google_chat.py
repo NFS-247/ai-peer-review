@@ -277,6 +277,89 @@ def test_budget_escalation_card_no_spend_line_without_breakdown():
     assert "24h spend:" not in text
 
 
+def test_disagreement_card_shows_split_and_override_action():
+    card = gc.build_disagreement_card(
+        project_name="NFS Central", pr_number=91,
+        pr_url="https://github.com/NFS-247/nfs-central/pull/91",
+        pr_title="Vendor Intelligence PR 1",
+        tier="high_stakes", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "request_changes", "gpt": "request_changes",
+                            "gemini": "approve"},
+        approve_url="https://script.google.com/macros/s/AB/exec?action=approve",
+    )
+    c = card["cardsV2"][0]["card"]
+    assert c["header"]["title"] == "NFS Central: PR #91 — reviewers split"
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "Reviewers couldn't agree" in text
+    assert "✅ approve: gemini" in text
+    assert "✋ want changes: claude, gpt" in text       # who's blocking, surfaced
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert texts == ["✅ Approve & mark ready", "Open PR #91"]
+    assert "Merge" not in " ".join(texts)               # no one-tap merge on a contested PR
+
+
+def test_disagreement_card_omits_approve_without_url():
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="t",
+        tier="high_stakes", reason_short="reviewers disagreed past round budget",
+        reviewer_summaries={"claude": "request_changes", "gpt": "approve"},
+    )
+    buttons = card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+    assert [b["text"] for b in buttons] == ["Open PR #1"]
+
+
+def test_disagreement_card_escapes_html_in_title():
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=1, pr_url="http://x/1",
+        pr_title="fix <script> & x", tier="backend",
+        reason_short="r", reviewer_summaries={},
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "&lt;script&gt;" in text and "<script>" not in text
+
+
+def test_disagreement_card_buckets_non_verdict_reviewers():
+    # A reviewer that errored / only commented must NOT show as 'want changes' —
+    # it goes to a separate bucket so the override decision isn't misled.
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=5, pr_url="http://x/5", pr_title="t",
+        tier="high_stakes", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "request_changes", "gpt": "approve",
+                            "gemini": "error"},
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "✋ want changes: claude" in text
+    assert "✅ approve: gpt" in text
+    assert "no clear verdict: gemini" in text          # errored reviewer, not a blocker
+    assert "want changes: claude, gemini" not in text  # gemini is NOT lumped in
+
+
+def test_disagreement_card_split_is_sorted_regardless_of_input_order():
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="t",
+        tier="high_stakes", reason_short="r",
+        reviewer_summaries={"gpt": "request_changes", "claude": "request_changes"},
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "✋ want changes: claude, gpt" in text       # sorted, not input order
+
+
+def test_disagreement_card_handles_round_suffix_in_verdict():
+    # Production summaries are "<verdict> (round N)" — the leading token is matched,
+    # so the round suffix doesn't shove a blocker into "no clear verdict".
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="t",
+        tier="high_stakes", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "request_changes (round 6)",
+                            "gpt": "request_changes (round 6)",
+                            "gemini": "approve (round 6)"},
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "✋ want changes: claude, gpt" in text
+    assert "✅ approve: gemini" in text
+    assert "no clear verdict" not in text   # the (round N) suffix didn't misbucket
+
+
 def test_send_requires_url():
     with pytest.raises(ValueError):
         gc.send_chat_message("", {"text": "hi"})

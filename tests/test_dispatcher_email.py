@@ -298,3 +298,137 @@ def test_budget_pr_comment_fallback_omits_operator_approve(tmp_path):
     )
     assert api.comments, "expected a durable PR-comment fallback"
     assert "OPERATOR APPROVE" not in api.comments[0][1]
+
+
+def test_disagreement_trigger_uses_disagreement_card(tmp_path):
+    # A reviewers-couldn't-converge trigger (hard round cap) routes to the
+    # disagreement card: the split + Approve-to-override, not the generic approval
+    # card and not a one-tap merge.
+    from scripts.dispatcher.escalation import EscalationTrigger
+
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/nfs-central",
+        "APPROVE_WEBAPP_URL": "https://script.google.com/macros/s/AB/exec",
+        "APPROVE_SIGNING_SECRET": "sec",
+    }, tmp_path)
+    sent = {}
+    with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
+        main._send_escalation(
+            cfg=cfg, api=_FakeAPI(), pr_number=91, pr_url="http://x/91", pr_title="T",
+            tier="high_stakes", branch="f/x", head_sha="abc1234",
+            reason_short="hard round cap reached", detail="d",
+            reviewer_summaries={"claude": "request_changes", "gpt": "request_changes",
+                                "gemini": "approve"},
+            ci_status=CIStatus.SUCCESS, diff_summary="+1-0", workflow_run_url="http://run",
+            trigger=EscalationTrigger.HARD_ROUND_CAP,
+        )
+    c = sent["card"]["cardsV2"][0]["card"]
+    assert "reviewers split" in c["header"]["title"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "Reviewers couldn't agree" in text and "✋ want changes: claude, gpt" in text
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "✅ Approve & mark ready" in texts            # operator can override
+    assert "🚀 Approve & Merge" not in texts              # not one-tap merge a contested PR
+
+
+def test_cost_spike_uses_disagreement_card(tmp_path):
+    # Per-PR cost ceiling (not converged) is a disagreement, not a budget stop —
+    # it routes to the disagreement card, where Approve is a legit override.
+    from scripts.dispatcher.escalation import EscalationTrigger
+
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/nfs-central",
+        "APPROVE_WEBAPP_URL": "https://script.google.com/macros/s/AB/exec",
+        "APPROVE_SIGNING_SECRET": "sec",
+    }, tmp_path)
+    sent = {}
+    with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
+        main._send_escalation(
+            cfg=cfg, api=_FakeAPI(), pr_number=2, pr_url="http://x/2", pr_title="T",
+            tier="high_stakes", branch="f/x", head_sha="abc1234",
+            reason_short="per-PR cost ceiling reached", detail="d",
+            reviewer_summaries={"claude": "request_changes", "gpt": "approve"},
+            ci_status=CIStatus.SUCCESS, diff_summary="+1-0", workflow_run_url="http://run",
+            trigger=EscalationTrigger.COST_SPIKE,
+        )
+    c = sent["card"]["cardsV2"][0]["card"]
+    assert "reviewers split" in c["header"]["title"]     # disagreement card, not budget
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "✅ Approve & mark ready" in texts
+
+
+def test_disagreement_approve_gated_on_signing_secret(tmp_path):
+    # Webapp set but NO signing secret -> no one-tap Approve (an unsigned link is
+    # rejected/insecure); only Open PR remains.
+    from scripts.dispatcher.escalation import EscalationTrigger
+
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/nfs-central",
+        "APPROVE_WEBAPP_URL": "https://script.google.com/macros/s/AB/exec",
+    }, tmp_path)  # no APPROVE_SIGNING_SECRET
+    sent = {}
+    with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
+        main._send_escalation(
+            cfg=cfg, api=_FakeAPI(), pr_number=3, pr_url="http://x/3", pr_title="T",
+            tier="high_stakes", branch="f/x", head_sha="abc1234",
+            reason_short="hard round cap reached", detail="d",
+            reviewer_summaries={"claude": "request_changes"},
+            ci_status=CIStatus.SUCCESS, diff_summary="+1-0", workflow_run_url="http://run",
+            trigger=EscalationTrigger.HARD_ROUND_CAP,
+        )
+    section = sent["card"]["cardsV2"][0]["card"]["sections"][0]
+    texts = [b["text"] for b in section["widgets"][1]["buttonList"]["buttons"]]
+    assert texts == ["Open PR #3"]   # no Approve button without a signing secret
+
+
+def test_all_disagreement_triggers_route_to_disagreement_card(tmp_path):
+    # Every "couldn't converge" trigger -> the disagreement card, never one-tap merge.
+    from scripts.dispatcher.escalation import DISAGREEMENT_TRIGGERS
+
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/nfs-central",
+    }, tmp_path)
+    for trig in DISAGREEMENT_TRIGGERS:
+        sent = {}
+        with mock.patch.object(main, "send_chat_message",
+                               lambda url, card: sent.update(card=card)):
+            main._send_escalation(
+                cfg=cfg, api=_FakeAPI(), pr_number=4, pr_url="http://x/4", pr_title="T",
+                tier="high_stakes", branch="f/x", head_sha="abc1234",
+                reason_short="r", detail="d",
+                reviewer_summaries={"claude": "request_changes", "gpt": "approve"},
+                ci_status=CIStatus.SUCCESS, diff_summary="+1-0", workflow_run_url="http://run",
+                trigger=trig,
+            )
+        c = sent["card"]["cardsV2"][0]["card"]
+        assert "reviewers split" in c["header"]["title"], f"{trig} -> disagreement card"
+        texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+        assert "🚀 Approve & Merge" not in texts, f"{trig} must never one-tap merge"
+
+
+def test_disagreement_approve_gated_when_webapp_url_missing(tmp_path):
+    # Signing secret set but NO web-app URL -> still no Approve (both are required).
+    from scripts.dispatcher.escalation import EscalationTrigger
+
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/nfs-central",
+        "APPROVE_SIGNING_SECRET": "sec",  # but no APPROVE_WEBAPP_URL
+    }, tmp_path)
+    sent = {}
+    with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
+        main._send_escalation(
+            cfg=cfg, api=_FakeAPI(), pr_number=5, pr_url="http://x/5", pr_title="T",
+            tier="high_stakes", branch="f/x", head_sha="abc1234",
+            reason_short="hard round cap reached", detail="d",
+            reviewer_summaries={"claude": "request_changes"},
+            ci_status=CIStatus.SUCCESS, diff_summary="+1-0", workflow_run_url="http://run",
+            trigger=EscalationTrigger.HARD_ROUND_CAP,
+        )
+    section = sent["card"]["cardsV2"][0]["card"]["sections"][0]
+    texts = [b["text"] for b in section["widgets"][1]["buttonList"]["buttons"]]
+    assert texts == ["Open PR #5"]   # both web app AND secret required
