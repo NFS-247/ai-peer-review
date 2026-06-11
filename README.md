@@ -141,6 +141,14 @@ status checks** before merge — so an unreviewed or rewritten commit can't chan
 behavior fleet-wide. See
 [GitHub branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches).
 
+**What actually enforces the gate.** `v2` only ever *fast-forwards* from `main`,
+and every commit reaches `main` through a dispatcher-reviewed PR (the 3 reviewers
+on this repo) plus the `selftest.yml` checks — so nothing lands on `v2` that
+didn't clear the gate. The "no `v2` tag" rule is enforced too: the
+[`guard-v2-tag.yml`](.github/workflows/guard-v2-tag.yml) workflow fails if a `v2`
+tag ever appears, and you can additionally add a repository ruleset forbidding
+creation of a tag named `v2`.
+
 ## Cut 1 — multi-tenancy across NFS-247's repos
 
 Cut 1 makes the dispatcher cleanly multi-tenant for NFS-247's **own** repos
