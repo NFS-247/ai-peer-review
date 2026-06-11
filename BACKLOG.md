@@ -8,12 +8,14 @@ live in that repo — out of this session's scope (this session can only write t
 
 ## P1 — Escalation EMAIL is broken (the alerting path) · [ai-peer-review]
 
-**✅ FIXED — PR #2** (`claude/fix-escalation-email`): configurable verified
-sender (`email_from`, env > repo config > default), self-diagnosing fallback
-with the real Resend error + hint, a hardened `_post_fallback_comment` that never
-raises, and the first tests for the email send path. Panel-approved 3/3 then
-operator-approved; pending merge. Operator still must verify a Resend domain and
-set `email_from` for email to actually deliver.
+**✅ SHIPPED — PR #2** (squash `c90fb708`, on `main` + `@v2`): configurable
+verified sender (`email_from`, env > repo config > default), self-diagnosing
+fallback with the real Resend error + hint, a hardened `_post_fallback_comment`
+that never raises, and the first tests for the email send path. Panel-approved
+3/3, operator-approved, merged, and live on `@v2`. **Operator still must verify a
+Resend domain and set `email_from`** (in the consumer's `.peer-review.json`) for
+email to actually deliver — until then escalations use the hardened PR-comment
+fallback.
 
 **Symptom (observed this session):** every escalation email failed with
 `RuntimeError`. The operator only got alerts because the PR-comment fallback
@@ -48,18 +50,18 @@ account's *own* email. Sending to the operator's address returns **HTTP 403**
 Surfaced while the engine reviewed its own PRs (#1 front door, #2 email fix).
 All are engine changes → ship via a deliberate `@v2` release (see next item).
 
-1. **Reviewer read-timeout too tight for large diffs.** `ai_client.py` uses a
-   120s read timeout for all reviewers. `gpt` repeatedly hit
-   `TimeoutError` reviewing the large front-door PR (#1) while `claude`/`gemini`
-   finished — so a big-but-valid PR can't get a clean 3/3. Make the timeout
-   env-configurable with a higher default (~300s). PR #1 was operator-approved
-   on 2/3 because of this (gpt failure was infra, not an objection).
+1. **✅ SHIPPED — Reviewer read-timeout too tight for large diffs.** PR #5
+   (squash `ca39ba4`, on `main` + `@v2`): read timeouts (bare or URLError-wrapped)
+   now route to a separate, bounded timeout-retry budget; the OpenAI read timeout
+   is operator-tunable via `OPENAI_READ_TIMEOUT` (default 300s, clamped 600s), and
+   gpt opts into one retry with a per-call `Idempotency-Key` so the retry can't
+   double-bill (claude/gemini fail a timeout cleanly). Reviewed 3/3. This was the
+   cause of most escalations this session.
 
-2. **`@v2` is ~22 commits / ~2000 lines behind `main`.** Significant unreleased
-   engine work (per-model spend pricing, GitHub rate-limit retry/backoff, model
-   selection, escalation/ready fixes, budget pre-warning). Self-review **and all
-   consumers** (StockTrader/Canary) run the older Cut-1 engine until a deliberate,
-   tested `v2.x` release moves the `@v2` tag. The timeout fix above ships with it.
+2. **✅ DONE — `@v2` re-cut to `main`.** The `v2` branch was fast-forwarded to
+   `main` (`c90fb70`) — an 8-commit delta (the timeout + email fixes plus docs/CI
+   wiring), 287 tests green. Consumers (StockTrader/Canary) pick up both fixes on
+   their next run. Rollback point if ever needed: old `v2` was `e0de49e`.
 
 3. **Stale `dispatcher:secret-missing` label.** Added when
    `DISPATCHER_VERDICT_SECRET` is absent; **never removed** once the secret is
