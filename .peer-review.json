@@ -1,0 +1,59 @@
+{
+  "$comment": "Self-review config: the dispatcher engine reviews its OWN changes. Tuned for a pure-stdlib GitHub Action with a money path (cost accounting) and a security path (HMAC-signed verdicts, secret redaction).",
+
+  "project_name": "AI Peer Review (dispatcher engine)",
+  "operator_github_login": "NERT24",
+  "project_description": "The multi-tenant AI peer-review dispatcher engine itself. It is a pure-stdlib GitHub Action (no third-party imports in scripts/dispatcher — enforced by tests/test_dispatcher_standalone.py). It accounts AI spend against per-PR and 24h ceilings (a money path), and trusts only HMAC-signed verdicts authored by the operator/bot (a security path). The front_door/ directory is a separate, portable web app (not the engine).",
+
+  "review_guidance": [
+    "Stdlib-only violations: any third-party / cross-package import added under scripts/dispatcher (breaks portability; the standalone test guards this).",
+    "Money-path errors: cost accounting that double-counts, under-counts, or lets a wrong price/model silently inflate the 24h ledger and trip ceilings.",
+    "Identity/verdict bypass: anything that would let an unsigned or non-operator comment count as a verdict or an OPERATOR command (HMAC, author-id checks).",
+    "Secret leakage: an API key or webhook URL that could reach a PR comment without passing through redact().",
+    "GitHub rate-limit regressions: re-introducing per-PR calls in the sweep, un-memoized issue scans, or retrying a write that could double-post.",
+    "Escalation-logic correctness: a converged PR escalating redundantly, or a head-lock / daily-ceiling stop being silently skipped."
+  ],
+
+  "high_stakes_paths": [
+    "scripts/dispatcher/**",
+    "action.yml",
+    ".github/workflows/**",
+    "templates/**"
+  ],
+
+  "content_scan_safety_tokens": [
+    "DISPATCHER_VERDICT_SECRET",
+    "compare_digest",
+    "verify_verdict_signature",
+    "--no-verify"
+  ],
+
+  "head_lock_paths": [
+    "scripts/dispatcher/verdict.py",
+    "scripts/dispatcher/redact.py",
+    "scripts/dispatcher/github_api.py",
+    "action.yml",
+    ".github/workflows/**"
+  ],
+
+  "backend_path_roots": [
+    "tests/",
+    "front_door/"
+  ],
+
+  "routine_root_globs": ["*.md"],
+  "routine_path_patterns": ["front_door/**/*.md"],
+
+  "routine_reviewers": ["claude", "gpt"],
+  "backend_reviewers": ["claude", "gpt"],
+  "high_stakes_reviewers": ["claude", "gpt", "gemini"],
+
+  "max_review_rounds": 6,
+  "high_stakes_round_budget": 2,
+  "per_pr_cost_ceiling_usd": 8.0,
+  "daily_cost_ceiling_usd": 25.0,
+  "escalation_cooldown_minutes": 10,
+
+  "gemini_model": "gemini-2.5-flash",
+  "billing_mode": "byok"
+}
