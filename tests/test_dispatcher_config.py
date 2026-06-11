@@ -79,8 +79,11 @@ from scripts.dispatcher.config import (
 from scripts.dispatcher.repo_config import RepoConfig
 
 
-def test_no_config_file_uses_generic_defaults():
-    cfg = load_from_env({"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "NFS-247/Canary"})
+def test_no_config_file_uses_generic_defaults(tmp_path):
+    # Point at a nonexistent path so a real .peer-review.json in the CWD (this
+    # repo now ships one for self-review) can't bleed into the "no config" case.
+    cfg = load_from_env({"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "NFS-247/Canary",
+                         REPO_CONFIG_PATH_ENV: str(tmp_path / "nope.json")})
     # project_name falls back to the repo name when no config supplies one.
     assert cfg.project_name == "Canary"
     assert cfg.operator_github_login == "NERT24"
@@ -141,8 +144,9 @@ def test_cooldown_env_override_zero_disables():
     assert cfg.escalation_cooldown_minutes == 0
 
 
-def test_model_selection_defaults_empty():
-    cfg = load_from_env({"GITHUB_TOKEN": "t"})
+def test_model_selection_defaults_empty(tmp_path):
+    # Isolate from any real .peer-review.json in the CWD (see note above).
+    cfg = load_from_env({"GITHUB_TOKEN": "t", REPO_CONFIG_PATH_ENV: str(tmp_path / "nope.json")})
     assert cfg.claude_model == ""
     assert cfg.gpt_model == ""
     assert cfg.gemini_model == ""
