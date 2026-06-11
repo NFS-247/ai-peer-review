@@ -6,7 +6,7 @@ description: >
   never merges (no contents: write in the caller).
 
 # This is a composite action so the dispatcher package travels WITH it:
-# when a repo does `uses: NFS-247/ai-peer-review@v1`, GitHub fetches this
+# when a repo does `uses: NFS-247/ai-peer-review@v2`, GitHub fetches this
 # repo's contents into ${{ github.action_path }} automatically — no cross-repo
 # checkout, no PAT, no token juggling. Private-action access is governed by the
 # org's Actions access setting.

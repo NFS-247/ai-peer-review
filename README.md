@@ -50,7 +50,7 @@ Safety properties (see `scripts/dispatcher/README.md` and the design doc):
 
 1. **Add the caller workflow.** Copy `templates/caller-workflow.yml` into the
    target repo at `.github/workflows/ai-peer-review.yml`. It runs
-   `uses: NFS-247/ai-peer-review@v1` — the dispatcher code is fetched
+   `uses: NFS-247/ai-peer-review@v2` — the dispatcher code is fetched
    automatically, no PAT or cross-repo checkout.
 
 2. **(Optional) Add a config.** Copy `templates/peer-review.example.json` to
@@ -108,9 +108,46 @@ ai-peer-review.schema.json config field reference
 
 ## Versioning
 
-Consuming repos pin a tag (`@v1`). Cutting a new dispatcher version is a
-deliberate tag bump, so a change here can never silently change how an existing
-project's PRs are reviewed.
+Consuming repos track the **`@v2` branch**, so engine changes — new escalation
+cards, timeout tuning, security patches — reach every project automatically on
+its next run, with no per-repo bump.
+
+Be clear-eyed about the trade-off: a branch ref means **every** change merged to
+`@v2` propagates the same way — including a regression, a breaking change, or a
+model swap that silently raises AI cost. Two things make that acceptable here:
+(1) every change to `@v2` first passes through this dispatcher's **own
+3-reviewer gate** — the money-path, escalation-correctness, and stdlib checks
+run on each PR before it can merge; and (2) the org owns all its consumers and
+*wants* fixes to land without chasing a bump in each repo — the opposite of the
+old `@v1` *tag*, which silently froze every repo on a 65-commit-old snapshot that
+never updated (the trap this replaces). A repo that cannot tolerate auto-updates
+should pin a specific commit **SHA** instead of `@v2`.
+
+**Freeze a repo with a SHA.** A full commit SHA never moves:
+
+```yaml
+      - uses: NFS-247/ai-peer-review@4fa52dfc9b9be09e5d672618a51551f283c72274
+        # frozen at a known-good commit; bump deliberately when you choose to
+```
+
+**`v2` is a branch, never a tag.** GitHub Actions ref resolution is ambiguous
+when a tag and a branch share a name, so a `v2` *tag* could silently shadow the
+`v2` *branch* every consumer runs. **Never create a `v2` tag.** (`v1` is the
+legacy frozen tag; `v2` is the live branch — don't blur them.)
+
+**Keep `v2` protected.** Because any push to `v2` reaches every consumer at once,
+the branch must have protection on — **no force-pushes, require the PR review +
+status checks** before merge — so an unreviewed or rewritten commit can't change
+behavior fleet-wide. See
+[GitHub branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches).
+
+**What actually enforces the gate.** `v2` only ever *fast-forwards* from `main`,
+and every commit reaches `main` through a dispatcher-reviewed PR (the 3 reviewers
+on this repo) plus the `selftest.yml` checks — so nothing lands on `v2` that
+didn't clear the gate. The "no `v2` tag" rule is enforced too: the
+[`guard-v2-tag.yml`](.github/workflows/guard-v2-tag.yml) workflow fails if a `v2`
+tag ever appears, and you can additionally add a repository ruleset forbidding
+creation of a tag named `v2`.
 
 ## Cut 1 — multi-tenancy across NFS-247's repos
 
