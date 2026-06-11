@@ -129,6 +129,7 @@ Reply on the PR with one of (matches Section 7 of the design doc):
 
 __all__ = [
     "RESEND_API_URL",
+    "DEFAULT_FROM",
     "EmailMessage",
     "ResendClient",
     "build_escalation_email",

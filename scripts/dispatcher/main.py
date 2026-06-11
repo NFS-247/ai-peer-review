@@ -40,7 +40,7 @@ from .call_google_chat import (
     build_ready_card,
     send_chat_message,
 )
-from .email_send import EmailMessage, ResendClient, build_escalation_email
+from .email_send import DEFAULT_FROM, EmailMessage, ResendClient, build_escalation_email
 from .escalation import (
     COOLDOWN_GATED_TRIGGERS,
     EscalationTrigger,
@@ -274,6 +274,26 @@ def _handle_operator_command(
     return CMD_RESULT_HANDLED, ""
 
 
+def _post_fallback_comment(api: GitHubAPI, pr_number: int, body: str) -> bool:
+    """Post a fallback escalation comment; never raise. Returns success.
+
+    This is the last-resort durable channel. If even this fails (e.g. a GitHub
+    rate limit), log loudly to stderr so the missed escalation is visible in the
+    run output rather than silently lost — the failure mode that dropped an
+    escalation this session.
+    """
+    try:
+        api.post_comment(pr_number, body)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"CRITICAL: escalation fallback comment failed on PR #{pr_number} "
+            f"({type(exc).__name__}: {exc}). The operator may not have been notified.",
+            file=sys.stderr,
+        )
+        return False
+
+
 def _send_escalation(
     *,
     cfg: DispatcherConfig,
@@ -358,25 +378,38 @@ def _send_escalation(
             to=cfg.operator_email,
             subject=f"[{cfg.project_name}] PR #{pr_number} — {reason_short}",
             text=body_text,
+            from_address=cfg.email_from or DEFAULT_FROM,
         )
         try:
             ResendClient(cfg.resend_api_key).send(msg)
             emailed = True
         except Exception as exc:  # noqa: BLE001
-            api.post_comment(
+            # Surface the actual Resend error (e.g. the 403 you get when sending
+            # from the default onboarding@resend.dev to a non-account address) so
+            # the misconfig is self-diagnosing, not an opaque RuntimeError.
+            hint = ""
+            if not cfg.email_from:
+                hint = (
+                    "\n\nNo verified sender configured: set `email_from` in "
+                    ".peer-review.json (or the EMAIL_FROM env) to an address on a "
+                    "domain verified in Resend. The default sender cannot deliver "
+                    "to your inbox."
+                )
+            _post_fallback_comment(
+                api,
                 pr_number,
                 f"⚠ Escalation email failed to send "
-                f"(`{type(exc).__name__}`). Posting the escalation here as "
-                f"fallback so it is never silently lost.\n\n"
-                f"@{cfg.operator_github_login}\n\n"
-                f"```\n{body_text}\n```",
+                f"(`{type(exc).__name__}`: {str(exc)[:300]}). Posting the "
+                f"escalation here as fallback so it is never silently lost."
+                f"{hint}\n\n@{cfg.operator_github_login}\n\n```\n{body_text}\n```",
             )
             return
 
     if not emailed:
         # No email configured at all: PR-comment fallback so the operator is
         # still notified.
-        api.post_comment(
+        _post_fallback_comment(
+            api,
             pr_number,
             f"📣 Escalation (no email configured). "
             f"@{cfg.operator_github_login}\n\n```\n{body_text}\n```",

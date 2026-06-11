@@ -43,6 +43,10 @@ class DispatcherConfig:
     google_chat_webhook_url: Optional[str] = None
     approve_webapp_url: Optional[str] = None
     approve_signing_secret: Optional[str] = None
+    # Verified Resend sender for escalation emails (see repo_config.email_from).
+    # Empty -> the default onboarding@resend.dev, which can't deliver to the
+    # operator, so email fails and the PR-comment fallback carries the alert.
+    email_from: str = ""
 
     tiers: dict[str, TierConfig] = field(default_factory=dict)
     max_review_rounds: int = 6
@@ -174,6 +178,8 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
     claude_model = (e.get("ANTHROPIC_MODEL") or rc.claude_model or "").strip()
     gpt_model = (e.get("OPENAI_MODEL") or rc.gpt_model or "").strip()
     gemini_model = (e.get("GEMINI_MODEL") or rc.gemini_model or "").strip()
+    # Escalation email sender: env override > repo config > "" (default sender).
+    email_from = (e.get("EMAIL_FROM") or rc.email_from or "").strip()
 
     return DispatcherConfig(
         project_name=project_name,
@@ -190,6 +196,7 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         google_chat_webhook_url=secret("GOOGLE_CHAT_WEBHOOK_URL"),
         approve_webapp_url=secret("APPROVE_WEBAPP_URL"),
         approve_signing_secret=secret("APPROVE_SIGNING_SECRET"),
+        email_from=email_from,
         tiers=tiers_from_repo_config(rc),
         max_review_rounds=max_rounds,
         per_pr_cost_ceiling_usd=per_pr_ceiling,
