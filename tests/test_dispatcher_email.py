@@ -202,7 +202,7 @@ def test_budget_spike_escalation_uses_budget_card_not_approve(tmp_path):
             diff_summary="+1-0", workflow_run_url="http://run",
             spend_breakdown={"claude": 13.11, "gpt": 1.86, "gemini": 0.71},
             spent_usd=15.68,
-            trigger=EscalationTrigger.DAILY_COST_SPIKE.value,
+            trigger=EscalationTrigger.DAILY_COST_SPIKE,
         )
 
     section = sent["card"]["cardsV2"][0]["card"]["sections"][0]
@@ -211,6 +211,54 @@ def test_budget_spike_escalation_uses_budget_card_not_approve(tmp_path):
     assert "Approve" not in " ".join(texts)          # the fix
     assert "💵 Increase limit" in texts
     assert any(
-        "NFS-247/StockTrader/edit" in b["onClick"]["openLink"]["url"]
+        "NFS-247/StockTrader/blob/HEAD" in b["onClick"]["openLink"]["url"]
         for b in buttons if "Increase" in b["text"]
     )
+
+
+def test_budget_card_sums_breakdown_when_no_total(tmp_path):
+    # spent_usd not passed -> _send_escalation sums the breakdown for the card.
+    from scripts.dispatcher.escalation import EscalationTrigger
+
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/StockTrader",
+    }, tmp_path)
+    sent = {}
+    with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
+        main._send_escalation(
+            cfg=cfg, api=_FakeAPI(), pr_number=1, pr_url="http://x/1", pr_title="T",
+            tier="high_stakes", branch="f/x", head_sha="abc1234",
+            reason_short="24-hour dispatcher spend ceiling reached", detail="d",
+            reviewer_summaries={}, ci_status=CIStatus.SUCCESS,
+            diff_summary="+1-0", workflow_run_url="http://run",
+            spend_breakdown={"claude": 13.11, "gpt": 1.86, "gemini": 0.71},
+            spent_usd=None,                       # no total -> must sum to 15.68
+            trigger=EscalationTrigger.DAILY_COST_SPIKE,
+        )
+    card = sent["card"]["cardsV2"][0]["card"]
+    assert "$15.68" in card["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "$15.68" in card["header"]["subtitle"]
+
+
+def test_non_budget_escalation_keeps_approve_buttons(tmp_path):
+    # Regression: a NON-budget escalation with an approve web app still offers
+    # Approve / Approve & Merge — the trigger branch didn't affect other types.
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/StockTrader",
+        "APPROVE_WEBAPP_URL": "https://script.google.com/macros/s/AB/exec",
+    }, tmp_path)
+    sent = {}
+    with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
+        main._send_escalation(
+            cfg=cfg, api=_FakeAPI(), pr_number=9, pr_url="http://x/9", pr_title="T",
+            tier="high_stakes", branch="f/x", head_sha="abc1234",
+            reason_short="high-stakes file changed; operator review required", detail="d",
+            reviewer_summaries={"claude": "approve"}, ci_status=CIStatus.SUCCESS,
+            diff_summary="+1-0", workflow_run_url="http://run",
+            # no trigger -> the standard approval card
+        )
+    section = sent["card"]["cardsV2"][0]["card"]["sections"][0]
+    texts = [b["text"] for b in section["widgets"][1]["buttonList"]["buttons"]]
+    assert "✅ Approve" in texts and "🚀 Approve & Merge" in texts

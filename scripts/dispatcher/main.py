@@ -317,7 +317,7 @@ def _send_escalation(
     workflow_run_url: str,
     spend_breakdown: Optional[dict] = None,
     spent_usd: Optional[float] = None,
-    trigger: str = "",
+    trigger: Optional[EscalationTrigger] = None,
 ) -> None:
     """Send the escalation email, with a guaranteed PR-comment fallback.
 
@@ -349,7 +349,7 @@ def _send_escalation(
     # guaranteed durable record, so a Chat failure never loses the escalation.
     if cfg.google_chat_webhook_url:
         try:
-            if trigger == EscalationTrigger.DAILY_COST_SPIKE.value:
+            if trigger == EscalationTrigger.DAILY_COST_SPIKE:
                 # Budget stop: the bot paused on money, not a review — show the
                 # spend + an Increase-limit action, NOT Approve/Approve&Merge
                 # (which could 'approve' a PR no reviewer looked at).
@@ -1187,7 +1187,7 @@ def _run_review_round(
             workflow_run_url=workflow_run_url,
             spend_breakdown=spend_breakdown,
             spent_usd=daily_total,
-            trigger=decision.trigger.value,
+            trigger=decision.trigger,
         )
 
     return 0

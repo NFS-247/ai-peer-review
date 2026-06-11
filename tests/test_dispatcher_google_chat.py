@@ -216,7 +216,7 @@ def test_budget_escalation_card_omits_approve_buttons():
         pr_url="https://github.com/NFS-247/StockTrader/pull/133",
         spent_usd=15.68, ceiling_usd=15.0,
         breakdown={"claude": 13.11, "gpt": 1.86, "gemini": 0.71},
-        increase_url="https://github.com/NFS-247/StockTrader/edit/main/.peer-review.json",
+        increase_url="https://github.com/NFS-247/StockTrader/blob/HEAD/.peer-review.json",
     )
     buttons = card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
     texts = [b["text"] for b in buttons]
@@ -249,7 +249,7 @@ def test_budget_escalation_card_open_only_without_increase_url():
 
 def test_build_increase_limit_url():
     assert gc.build_increase_limit_url("NFS-247/StockTrader") == (
-        "https://github.com/NFS-247/StockTrader/edit/main/.peer-review.json"
+        "https://github.com/NFS-247/StockTrader/blob/HEAD/.peer-review.json"
     )
     assert gc.build_increase_limit_url("") == ""
 
