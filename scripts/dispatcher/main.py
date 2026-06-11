@@ -367,6 +367,7 @@ def _send_escalation(
                     increase_url=build_increase_limit_url(
                         f"{cfg.repo_owner}/{cfg.repo_name}"
                     ),
+                    pr_title=pr_title,
                 )
             else:
                 card = build_escalation_card(
@@ -1163,13 +1164,17 @@ def _run_review_round(
         # "all in-flight reviews are paused" behavior. Attach the per-model 24h
         # breakdown so the operator sees what drove the spend.
         spend_breakdown = None
-        daily_total = None
         if decision.trigger == EscalationTrigger.DAILY_COST_SPIKE:
             _pause_all_in_flight(api, reason="24h dispatcher spend ceiling reached")
             try:
-                daily_total, spend_breakdown = global_state.get_24h_breakdown(api)
+                # daily_total (the 24h total behind the ceiling decision, set
+                # above) stays authoritative; refresh only the per-provider
+                # breakdown for the card.
+                _, spend_breakdown = global_state.get_24h_breakdown(api)
             except Exception:  # noqa: BLE001
-                spend_breakdown = round_by_provider
+                # Breakdown unavailable — show none rather than this round's spend
+                # mislabeled as 24h; the total (daily_total) is still accurate.
+                spend_breakdown = None
         _send_escalation(
             cfg=cfg,
             api=api,

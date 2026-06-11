@@ -216,7 +216,7 @@ def test_budget_escalation_card_omits_approve_buttons():
         pr_url="https://github.com/NFS-247/StockTrader/pull/133",
         spent_usd=15.68, ceiling_usd=15.0,
         breakdown={"claude": 13.11, "gpt": 1.86, "gemini": 0.71},
-        increase_url="https://github.com/NFS-247/StockTrader/blob/HEAD/.peer-review.json",
+        increase_url="https://github.com/NFS-247/StockTrader/edit/HEAD/.peer-review.json",
     )
     buttons = card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
     texts = [b["text"] for b in buttons]
@@ -249,9 +249,32 @@ def test_budget_escalation_card_open_only_without_increase_url():
 
 def test_build_increase_limit_url():
     assert gc.build_increase_limit_url("NFS-247/StockTrader") == (
-        "https://github.com/NFS-247/StockTrader/blob/HEAD/.peer-review.json"
+        "https://github.com/NFS-247/StockTrader/edit/HEAD/.peer-review.json"
     )
-    assert gc.build_increase_limit_url("") == ""
+    # malformed 'owner/name' -> "" (never an "owner/" or "/name" link)
+    for bad in ("", "owner-only", "owner/", "/name"):
+        assert gc.build_increase_limit_url(bad) == ""
+
+
+def test_budget_escalation_card_includes_pr_title():
+    card = gc.build_budget_escalation_card(
+        project_name="P", pr_number=1, pr_url="http://x/1",
+        spent_usd=5.0, ceiling_usd=5.0, pr_title="Repoint dispatcher <x>",
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "Repoint dispatcher" in text          # operator context preserved
+    assert "&lt;x&gt;" in text                    # and HTML-escaped
+
+
+def test_budget_escalation_card_no_spend_line_without_breakdown():
+    # 24h breakdown unavailable -> show the total but NOT a misleading per-model line.
+    card = gc.build_budget_escalation_card(
+        project_name="P", pr_number=1, pr_url="http://x/1",
+        spent_usd=15.68, ceiling_usd=15.0, breakdown=None,
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "$15.68" in text
+    assert "24h spend:" not in text
 
 
 def test_send_requires_url():

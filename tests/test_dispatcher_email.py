@@ -211,7 +211,7 @@ def test_budget_spike_escalation_uses_budget_card_not_approve(tmp_path):
     assert "Approve" not in " ".join(texts)          # the fix
     assert "💵 Increase limit" in texts
     assert any(
-        "NFS-247/StockTrader/blob/HEAD" in b["onClick"]["openLink"]["url"]
+        "NFS-247/StockTrader/edit/HEAD" in b["onClick"]["openLink"]["url"]
         for b in buttons if "Increase" in b["text"]
     )
 
