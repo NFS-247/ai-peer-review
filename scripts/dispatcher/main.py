@@ -45,11 +45,11 @@ from .call_google_chat import (
 )
 from .email_send import DEFAULT_FROM, EmailMessage, ResendClient, build_escalation_email
 from .escalation import (
-    COOLDOWN_GATED_TRIGGERS,
     DISAGREEMENT_TRIGGERS,
     EscalationTrigger,
     cooldown_elapsed,
     decide_escalation,
+    should_defer_escalation,
 )
 from .github_api import GitHubAPI, PRComment
 from .parse_reply import (
@@ -811,8 +811,9 @@ def _run_convergence_only(
             label_state.write_cross_run_state(api, pr_number, cross, secret)
         return 0
 
+    verdicts = _trusted_existing_verdicts(api, pr_number, secret)
     convergence = check_convergence(
-        verdicts=_trusted_existing_verdicts(api, pr_number, secret),
+        verdicts=verdicts,
         required_reviewers=tier_cfg.reviewers,
         current_head_sha=ctx["head_sha"],
         current_diff_sha256=compute_diff_sha256(diff_text),
@@ -829,19 +830,35 @@ def _run_convergence_only(
         if tier == "high_stakes" and _diff_touches_head_lock(
             changed_files, cfg.repo_config.head_lock_paths
         ):
-            # Operator sign-off required. Defer the ping through the cooldown
-            # (the review round records the same pending stall); fire if due.
-            if cfg.escalation_cooldown_minutes > 0 and not cross.has_pending_escalation():
-                _record_pending_escalation(
-                    cross,
-                    ctx["head_sha"],
-                    trigger=EscalationTrigger.HIGH_STAKES_AUTO.value,
-                    reason_short="high-stakes file changed; operator review required",
-                    detail="This PR touches files that require explicit operator "
-                           "approval before merge, regardless of AI convergence.",
-                )
-                label_state.write_cross_run_state(api, pr_number, cross, secret)
-            _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=pr_number)
+            # Operator sign-off required — but the PR has CONVERGED (every required
+            # reviewer approved this head), so there's no dev iteration to protect.
+            # Ping NOW instead of deferring to the cooldown/sweep; that deferral is
+            # exactly what silently dropped the "all approved, needs your signature"
+            # ping on a converged head-lock PR.
+            cross.clear_pending_escalation()
+            cross.escalated_head_sha = ctx["head_sha"]
+            label_state.write_cross_run_state(api, pr_number, cross, secret)
+            label_state.set_escalated(api, pr_number, api.list_labels(pr_number))
+            _send_escalation(
+                cfg=cfg,
+                api=api,
+                pr_number=pr_number,
+                pr_url=ctx["url"],
+                pr_title=ctx["title"],
+                tier=tier,
+                branch=ctx["branch"],
+                head_sha=ctx["head_sha"],
+                reason_short="high-stakes file changed; operator review required",
+                detail="This PR touches files that require explicit operator "
+                       "approval before merge, regardless of AI convergence.",
+                reviewer_summaries={
+                    v.reviewer: f"{v.verdict} (round {v.round})" for v in verdicts
+                },
+                ci_status=ci_status,
+                diff_summary="",
+                workflow_run_url=os.environ.get("GITHUB_RUN_URL", ""),
+                trigger=EscalationTrigger.HIGH_STAKES_AUTO,
+            )
             return 0
         # Converged and clear: ready for merge. Drop any pending stall, then
         # notify once (durable comment + mobile ping for all tiers).
@@ -1171,9 +1188,10 @@ def _run_review_round(
         cross.clear_pending_escalation()
         cross.escalated_head_sha = ""
     elif decision.trigger != EscalationTrigger.NONE:
-        if (
-            decision.trigger in COOLDOWN_GATED_TRIGGERS
-            and cfg.escalation_cooldown_minutes > 0
+        if should_defer_escalation(
+            trigger=decision.trigger,
+            cooldown_minutes=cfg.escalation_cooldown_minutes,
+            converged=convergence.converged,
         ):
             # Defer: record the pending stall; do NOT ping yet. The phone fires
             # only once the dev agent goes quiet (the scheduled sweep, or a
@@ -1187,7 +1205,9 @@ def _run_review_round(
             )
             deferred = True
         else:
-            # Immediate (infra/budget) escalation supersedes any pending stall.
+            # Fire immediately — an infra/budget stop, OR a converged escalation
+            # (head-lock / suspicious-unanimous) where the PR is done and only
+            # waiting on the operator, so there's no iteration to wait out.
             cross.clear_pending_escalation()
 
     label_state.write_cross_run_state(api, pr_number, cross, secret)
