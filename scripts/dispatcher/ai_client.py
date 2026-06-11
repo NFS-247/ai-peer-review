@@ -10,6 +10,7 @@ Implementations live in call_claude.py, call_gpt.py, call_gemini.py.
 from __future__ import annotations
 
 import json
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -47,6 +48,8 @@ def request_json_with_retry(
     max_attempts: int = 4,
     base_delay: float = 2.0,
     max_delay: float = 60.0,
+    timeout_retries: int = 1,
+    timeout_backoff: float = 5.0,
     sleep=time.sleep,
 ) -> dict:
     """POST ``req`` and parse the JSON response, retrying transient failures.
@@ -57,11 +60,25 @@ def request_json_with_retry(
     ``RuntimeError`` with the provider + status, which the orchestrator treats
     as a reviewer being unavailable (and escalates).
 
+    A *read* timeout is handled on its own budget. ``urlopen`` raises
+    ``socket.timeout`` (an alias of ``TimeoutError``) when a slow generation
+    exceeds ``timeout``; that is NOT a ``URLError``, so without this branch it
+    would fail the round outright — exactly how gpt (the longest reviews)
+    intermittently lost rounds while claude/gemini finished. It gets up to
+    ``timeout_retries`` extra attempt(s) after a short ``timeout_backoff`` before
+    the reviewer is declared unavailable. As with the 5xx case the request may
+    already be in flight server-side, so this retry is deliberately small and
+    bounded: a rare double-charge is the accepted cost of not losing a required
+    reviewer to one slow round.
+
     Every wait is capped at ``max_delay`` seconds — including a server-sent
     ``Retry-After`` — so a buggy or hostile upstream (e.g. ``Retry-After:
     86400``) can never stall the job; the round fails fast and escalates.
     """
-    for attempt in range(1, max_attempts + 1):
+    timeouts_seen = 0
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
@@ -76,6 +93,17 @@ def request_json_with_retry(
             raise RuntimeError(
                 f"{provider} API HTTP {exc.code}: {detail[:500]}"
             ) from exc
+        except (socket.timeout, TimeoutError) as exc:
+            # A read timeout is a sibling of OSError, not a URLError, so it must
+            # be caught explicitly or it escapes the retry loop entirely.
+            if timeouts_seen < timeout_retries:
+                timeouts_seen += 1
+                sleep(min(timeout_backoff, max_delay))
+                continue
+            raise RuntimeError(
+                f"{provider} API read timed out after {timeout}s "
+                f"(retried {timeouts_seen}x)"
+            ) from exc
         except urllib.error.URLError as exc:
             if attempt < max_attempts:
                 sleep(min(base_delay * (2 ** (attempt - 1)), max_delay))
@@ -83,7 +111,6 @@ def request_json_with_retry(
             raise RuntimeError(
                 f"{provider} API request failed: {exc.reason}"
             ) from exc
-    raise RuntimeError(f"{provider} API: exhausted {max_attempts} attempts")
 
 
 @dataclass(frozen=True)
