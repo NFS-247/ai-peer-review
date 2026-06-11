@@ -50,7 +50,7 @@ Safety properties (see `scripts/dispatcher/README.md` and the design doc):
 
 1. **Add the caller workflow.** Copy `templates/caller-workflow.yml` into the
    target repo at `.github/workflows/ai-peer-review.yml`. It runs
-   `uses: NFS-247/ai-peer-review@v1` — the dispatcher code is fetched
+   `uses: NFS-247/ai-peer-review@v2` — the dispatcher code is fetched
    automatically, no PAT or cross-repo checkout.
 
 2. **(Optional) Add a config.** Copy `templates/peer-review.example.json` to
@@ -108,9 +108,14 @@ ai-peer-review.schema.json config field reference
 
 ## Versioning
 
-Consuming repos pin a tag (`@v1`). Cutting a new dispatcher version is a
-deliberate tag bump, so a change here can never silently change how an existing
-project's PRs are reviewed.
+Consuming repos track the **`@v2` branch**, so engine fixes — new escalation
+cards, timeout tuning, security patches — reach every project automatically on
+its next run, with no per-repo bump. The trade-off is deliberate: this org owns
+all its consumers and wants fixes to propagate, rather than freezing each repo
+on an old snapshot. (The earlier `@v1` *tag* did exactly that silently — repos
+pinned to it never received a single update; that's the trap this replaces.) A
+repo that genuinely needs to freeze can pin a specific commit SHA instead of
+`@v2`.
 
 ## Cut 1 — multi-tenancy across NFS-247's repos
 

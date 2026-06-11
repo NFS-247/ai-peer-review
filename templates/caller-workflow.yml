@@ -3,11 +3,12 @@
 #
 # It is the ONLY workflow file the consuming repo needs. On PR / CI-completion /
 # PR-comment events it runs the AI peer review dispatcher (Claude/GPT/Gemini)
-# from NFS-247/ai-peer-review at a pinned tag and posts signed verdicts.
+# from NFS-247/ai-peer-review (via `@v2`) and posts signed verdicts.
 #
 # The dispatcher code is fetched automatically by `uses:` — no PAT, no
-# cross-repo checkout. Pin @v1 so a change in the dispatcher repo can never
-# silently change how your PRs are reviewed; bump the tag deliberately.
+# cross-repo checkout. Track @v2 (a branch): engine fixes and new escalation
+# cards reach every repo automatically on its next run, nothing to bump. Need a
+# specific repo frozen instead? Pin a commit SHA in place of @v2.
 
 name: AI Peer Review
 
@@ -56,7 +57,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
 
       - name: Run AI peer review
-        uses: NFS-247/ai-peer-review@v1
+        uses: NFS-247/ai-peer-review@v2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
