@@ -16,6 +16,7 @@ from scripts.dispatcher.ai_client import AIResponse
 from scripts.dispatcher.config import DispatcherConfig, TierConfig
 from scripts.dispatcher.escalation import cooldown_elapsed
 from scripts.dispatcher.github_api import CheckRun, PRComment
+from scripts.dispatcher.repo_config import RepoConfig
 
 
 def _monotonic_verdict_clock(monkeypatch):
@@ -189,7 +190,8 @@ class FakeAPI:
     def comment_texts(self, n): return "\n".join(self.comments.get(n, []))
 
 
-def _cfg(*, cooldown=10, per_pr_ceiling=5.0, reviewers=("claude",), webhook=None):
+def _cfg(*, cooldown=10, per_pr_ceiling=5.0, reviewers=("claude",), webhook=None,
+         head_lock=()):
     tiers = {
         "routine": TierConfig(reviewers=reviewers, round_budget=3),
         "backend": TierConfig(reviewers=reviewers, round_budget=3),
@@ -203,6 +205,7 @@ def _cfg(*, cooldown=10, per_pr_ceiling=5.0, reviewers=("claude",), webhook=None
         google_chat_webhook_url=webhook,
         tiers=tiers, max_review_rounds=6, per_pr_cost_ceiling_usd=per_pr_ceiling,
         daily_cost_ceiling_usd=1000.0, escalation_cooldown_minutes=cooldown,
+        repo_config=RepoConfig(head_lock_paths=head_lock),
     )
 
 
@@ -356,3 +359,53 @@ def test_immediate_cost_spike_still_pings(monkeypatch):
 
     assert label_state.LABEL_ESCALATED in api.labels.get(101, [])
     assert label_state.LABEL_READY not in api.labels.get(101, [])
+
+
+def test_converged_unanimous_high_stakes_fires_immediately(monkeypatch):
+    # A high-stakes PR that converges unanimously on round 1 triggers
+    # SUSPICIOUS_UNANIMOUS — a cooldown-gated trigger. Before the fix it was
+    # DEFERRED (queued for a flaky sweep); now, because the PR has CONVERGED,
+    # it fires IN THE SAME RUN — no cooldown, no sweep dependency.
+    api = FakeAPI(files=["weird/unknown.txt"])  # unknown -> high_stakes
+    cfg = _cfg(cooldown=10)
+    holder = {"t": 1000.0}
+    _clock(monkeypatch, holder)
+    monkeypatch.setattr(M, "_build_client", lambda r, c: ApproveClient(r))
+
+    M._run_review_round(cfg=cfg, api=api, pr_number=101)
+
+    # Fired right away — not left pending for a sweep.
+    assert label_state.LABEL_ESCALATED in api.labels.get(101, [])
+    assert "Escalation" in api.comment_texts(101)
+    cross = label_state.read_cross_run_state(api, 101, "github-actions[bot]", "sek")
+    assert cross.has_pending_escalation() is False
+    assert cross.escalated_head_sha == "headsha1"
+
+
+def test_converged_head_lock_fires_immediately_and_dedupes(monkeypatch):
+    # A converged high-stakes PR touching a head-lock path needs operator sign-off
+    # (HIGH_STAKES_AUTO). Before the fix this was deferred to a flaky sweep — the
+    # exact path that silently dropped nfs-central #99's ping. Now it fires in the
+    # same run, AND a re-delivered CI-complete event must NOT re-ping.
+    api = FakeAPI(files=["weird/unknown.txt"])  # high_stakes + matched below
+    cfg = _cfg(cooldown=10, head_lock=("weird/**",))
+    holder = {"t": 1000.0}
+    _clock(monkeypatch, holder)
+    monkeypatch.setattr(M, "_build_client", lambda r, c: ApproveClient(r))
+
+    M._run_review_round(cfg=cfg, api=api, pr_number=101)
+
+    # Fired immediately as an ESCALATION (operator sign-off), not marked READY.
+    assert label_state.LABEL_ESCALATED in api.labels.get(101, [])
+    assert label_state.LABEL_READY not in api.labels.get(101, [])
+    fired = api.comment_texts(101).count("Escalation")
+    assert fired == 1
+
+    # A re-delivered CI-complete event re-evaluates convergence but must NOT
+    # re-ping (escalated_head_sha + escalated-label dedupe).
+    M._run_convergence_only(cfg=cfg, api=api, pr_number=101)
+    assert api.comment_texts(101).count("Escalation") == 1
+
+    cross = label_state.read_cross_run_state(api, 101, "github-actions[bot]", "sek")
+    assert cross.has_pending_escalation() is False
+    assert cross.escalated_head_sha == "headsha1"
