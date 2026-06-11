@@ -3,6 +3,7 @@
 
   "project_name": "AI Peer Review (dispatcher engine)",
   "operator_github_login": "NERT24",
+  "email_from": "AI Peer Review <peer-review@nfs247.com>",
   "project_description": "The multi-tenant AI peer-review dispatcher engine itself. It is a pure-stdlib GitHub Action (no third-party imports in scripts/dispatcher — enforced by tests/test_dispatcher_standalone.py). It accounts AI spend against per-PR and 24h ceilings (a money path), and trusts only HMAC-signed verdicts authored by the operator/bot (a security path). The front_door/ directory is a separate, portable web app (not the engine).",
 
   "review_guidance": [
