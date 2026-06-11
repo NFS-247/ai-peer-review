@@ -114,3 +114,21 @@ def test_action_block_without_text_is_rejected():
 
 def test_unknown_path_404():
     assert route("GET", "/nope", cookies={}, form={}, deps=_deps(FakeOperator())).status == 404
+
+
+class _BoomRead(FakeRead):
+    """One repo reads fine; another raises (bad token / unreachable)."""
+    def list_open_pulls(self, repo):
+        if repo == "NFS-247/Boom":
+            raise RuntimeError("HTTP 404")
+        return super().list_open_pulls(repo)
+
+
+def test_board_isolates_a_failing_repo():
+    cfg = config_mod.Config(read_token="t", repos=(REPO, "NFS-247/Boom"))
+    deps = Deps(read=_BoomRead(), operator_client=lambda c: FakeOperator(), cfg=cfg, now_ts=NOW)
+    r = route("GET", "/", cookies={}, form={}, deps=deps)
+    assert r.status == 200                      # the page still renders
+    assert "Phase 4a" in r.body                 # the healthy repo's PRs show
+    assert "Couldn't read this repo" in r.body  # the bad repo shows an error, not a 500
+    assert "HTTP 404" in r.body

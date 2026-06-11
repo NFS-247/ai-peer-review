@@ -83,6 +83,17 @@ class ProjectSpend:
     by_provider: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class RepoView:
+    """One project's slice of the board. ``error`` is set (and rows empty) when
+    that repo couldn't be read, so one bad/unreachable repo never takes the
+    whole board down."""
+    repo: str
+    rows: list  # list[BoardRow]
+    spend: ProjectSpend
+    error: str = ""
+
+
 # ---- label-derived signals --------------------------------------------------
 def status_from_labels(labels: list[str]) -> str:
     """Single status for a PR, by precedence (most blocking first).
@@ -271,7 +282,7 @@ __all__ = [
     "USAGE_LEDGER_MARKER", "WINDOW_SECONDS",
     "STATUS_SECRET_MISSING", "STATUS_PAUSED", "STATUS_ESCALATED", "STATUS_READY",
     "STATUS_REVIEWING", "STATUS_UNKNOWN", "ACTIONABLE_STATUSES",
-    "BoardRow", "InboxItem", "ProjectSpend",
+    "BoardRow", "InboxItem", "ProjectSpend", "RepoView",
     "status_from_labels", "tier_from_labels", "round_from_labels",
     "parse_state", "cost_from_state", "latest_verdicts", "spend_from_ledger",
     "build_board_row", "is_actionable", "to_inbox_item", "inbox_from_rows",

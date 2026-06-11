@@ -24,6 +24,7 @@ from .sessions import SID_COOKIE
 from .viewmodels import (
     GLOBAL_SPEND_MARKER,
     ProjectSpend,
+    RepoView,
     build_board_row,
     inbox_from_rows,
     spend_from_ledger,
@@ -80,26 +81,32 @@ def _signed_in(deps: Deps, cookies: dict) -> bool:
 
 
 # ---- board/inbox assembly ---------------------------------------------------
-def _gather(deps: Deps):
-    """[(repo, [BoardRow], ProjectSpend)] across all configured repos."""
-    grouped = []
+def _gather(deps: Deps) -> "list[RepoView]":
+    """One RepoView per configured repo. A repo that fails to read becomes a
+    RepoView with an ``error`` (and no rows) so the rest of the board still
+    renders — a bad token or a single unreachable repo can't 500 the page."""
+    views = []
     for repo in deps.cfg.repos:
-        rows = []
-        for pr in deps.read.list_open_pulls(repo):
-            n = int(pr.get("number", 0))
-            labels = deps.read.list_labels(repo, n)
-            comments = deps.read.list_issue_comments(repo, n)
-            rows.append(build_board_row(repo=repo, pr=pr, labels=labels, comments=comments))
-        ledger = deps.read.find_issue_body_by_marker(repo, GLOBAL_SPEND_MARKER)
-        total, by = spend_from_ledger(ledger, now_ts=deps.now_ts)
-        grouped.append((repo, rows, ProjectSpend(repo=repo, total_24h_usd=total, by_provider=by)))
-    return grouped
+        try:
+            rows = []
+            for pr in deps.read.list_open_pulls(repo):
+                n = int(pr.get("number", 0))
+                labels = deps.read.list_labels(repo, n)
+                comments = deps.read.list_issue_comments(repo, n)
+                rows.append(build_board_row(repo=repo, pr=pr, labels=labels, comments=comments))
+            ledger = deps.read.find_issue_body_by_marker(repo, GLOBAL_SPEND_MARKER)
+            total, by = spend_from_ledger(ledger, now_ts=deps.now_ts)
+            views.append(RepoView(repo, rows, ProjectSpend(repo, total, by)))
+        except Exception as exc:  # noqa: BLE001 - isolate per-repo failures
+            views.append(RepoView(repo, [], ProjectSpend(repo, 0.0, {}),
+                                  error=f"{type(exc).__name__}: {exc}"))
+    return views
 
 
-def _all_rows(grouped) -> list:
+def _all_rows(views) -> list:
     out = []
-    for _repo, rows, _spend in grouped:
-        out.extend(rows)
+    for v in views:
+        out.extend(v.rows)
     return out
 
 

@@ -19,6 +19,7 @@ from .viewmodels import (
     BoardRow,
     InboxItem,
     ProjectSpend,
+    RepoView,
 )
 
 
@@ -95,20 +96,21 @@ def _spend_line(spend: ProjectSpend) -> str:
     return f"<span class='meta'>24h spend: ${spend.total_24h_usd:.2f}{extra}</span>"
 
 
-def board_page(grouped: "list[tuple[str, list[BoardRow], ProjectSpend]]",
-               *, signed_in: bool = False) -> str:
-    if not grouped:
+def board_page(views: "list[RepoView]", *, signed_in: bool = False) -> str:
+    if not views:
         body = "<div class='empty'>No projects configured. Set <code>FRONT_DOOR_REPOS</code>.</div>"
         return _layout("Projects", body, signed_in=signed_in)
     cards = []
-    for repo, rows, spend in grouped:
-        if rows:
-            row_html = "".join(_board_row(r) for r in rows)
-        else:
-            row_html = "<div class='empty'>No open PRs.</div>"
+    for v in views:
+        if v.error:
+            inner = f"<div class='empty' style='color:#cf222e'>Couldn't read this repo — {escape(v.error)}</div>"
+            cards.append(f"<div class='card'><h2><span>{escape(v.repo)}</span></h2>{inner}</div>")
+            continue
+        row_html = "".join(_board_row(r) for r in v.rows) if v.rows \
+            else "<div class='empty'>No open PRs.</div>"
         cards.append(
-            f"<div class='card'><h2><span>{escape(repo)} {_health(rows)}</span>"
-            f"{_spend_line(spend)}</h2>{row_html}</div>"
+            f"<div class='card'><h2><span>{escape(v.repo)} {_health(v.rows)}</span>"
+            f"{_spend_line(v.spend)}</h2>{row_html}</div>"
         )
     return _layout("Projects", "".join(cards), signed_in=signed_in, refresh=30)
 
