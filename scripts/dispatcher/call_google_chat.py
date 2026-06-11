@@ -220,6 +220,88 @@ def build_budget_warning_card(
     }
 
 
+def build_increase_limit_url(repo: str, *, config_path: str = ".peer-review.json") -> str:
+    """First-cut 'Increase limit' link: GitHub's web editor for the per-repo config.
+
+    ``repo`` must be a well-formed 'owner/name' (both parts present, else "" — so a
+    missing owner or name never yields an "owner/" or "/name" link). Opens
+    ``.peer-review.json`` in the editor on the default branch (``HEAD``) so the
+    operator can raise ``daily_cost_ceiling_usd``; the edit route resolves any
+    default branch and works even if the file doesn't exist yet. (The one-tap
+    pick-the-amount + auto-resume version is a follow-up — see BACKLOG.md.)
+    """
+    owner, _, name = (repo or "").partition("/")
+    if not owner or not name:
+        return ""
+    return f"https://github.com/{owner}/{name}/edit/HEAD/{config_path}"
+
+
+def build_budget_escalation_card(
+    *,
+    project_name: str,
+    pr_number: int,
+    pr_url: str,
+    spent_usd: float,
+    ceiling_usd: float,
+    breakdown: Mapping[str, float] | None = None,
+    increase_url: str = "",
+    pr_title: str = "",
+) -> dict:
+    """Escalation card for a 24h spend-ceiling stop (``DAILY_COST_SPIKE``).
+
+    The bot paused on *money*, not on a review — there may be no reviews at all —
+    so this card deliberately OMITS Approve / Approve&Merge (tapping them could
+    'approve' an unreviewed PR). It shows where the 24h money went and offers an
+    'Increase limit' action plus Open PR — buttons that match the message.
+    """
+    spend_line = format_spend_breakdown(breakdown)
+    # The blank-line separator lives INSIDE spend_html, so it's omitted entirely
+    # when there's no breakdown (no stray empty line in the card).
+    spend_html = f"<b>24h spend:</b> {spend_line}<br><br>" if spend_line else ""
+    title_html = f"<b>{_esc(pr_title)}</b><br>" if pr_title else ""
+    body = (
+        f"{title_html}"
+        "<b>Reviews paused — 24h spend ceiling reached.</b><br>"
+        f"Used <b>${spent_usd:.2f}</b> of the <b>${ceiling_usd:.2f}</b> daily "
+        "AI-review budget.<br>"
+        f"{spend_html}"
+        "Raise the ceiling to resume, or leave it to stay paused. Approve/merge "
+        "is intentionally hidden — this is a budget stop, not a review (reviewers "
+        "may not have run)."
+    )
+    buttons = []
+    if increase_url:
+        buttons.append(
+            {"text": "💵 Increase limit", "onClick": {"openLink": {"url": increase_url}}}
+        )
+    buttons.append(
+        {"text": f"Open PR #{pr_number}", "onClick": {"openLink": {"url": pr_url}}}
+    )
+    return {
+        "cardsV2": [
+            {
+                "cardId": f"budget-escalation-pr-{pr_number}",
+                "card": {
+                    "header": {
+                        "title": f"{project_name}: daily spend ceiling reached",
+                        "subtitle": (
+                            f"${spent_usd:.2f} / ${ceiling_usd:.2f} · PR #{pr_number} paused"
+                        ),
+                    },
+                    "sections": [
+                        {
+                            "widgets": [
+                                {"textParagraph": {"text": body}},
+                                {"buttonList": {"buttons": buttons}},
+                            ]
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+
+
 def sign_action(secret: str, *, repo: str, pr_number: int, action: str) -> str:
     """HMAC-SHA256 hex over the canonical ``repo:pr:action`` string.
 

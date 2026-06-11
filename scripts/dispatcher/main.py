@@ -35,8 +35,10 @@ from .config import DispatcherConfig, load_from_env
 from .converge import CIStatus, check_convergence
 from .call_google_chat import (
     build_approve_url,
+    build_budget_escalation_card,
     build_budget_warning_card,
     build_escalation_card,
+    build_increase_limit_url,
     build_ready_card,
     send_chat_message,
 )
@@ -314,12 +316,17 @@ def _send_escalation(
     diff_summary: str,
     workflow_run_url: str,
     spend_breakdown: Optional[dict] = None,
+    spent_usd: Optional[float] = None,
+    trigger: Optional[EscalationTrigger] = None,
 ) -> None:
     """Send the escalation email, with a guaranteed PR-comment fallback.
 
     Per design Section 6 and 9: email failure must fall back to a PR comment.
     The dispatcher never silently fails to notify. ``spend_breakdown`` (optional)
     is the 24h per-model spend, surfaced on the Chat card for budget escalations.
+    ``trigger`` selects the Chat card: a ``DAILY_COST_SPIKE`` budget stop gets a
+    financial card (Increase limit, no Approve/Merge); everything else gets the
+    standard approval card.
     """
     body_text = build_escalation_email(
         project_name=cfg.project_name,
@@ -335,6 +342,7 @@ def _send_escalation(
         head_sha=head_sha,
         diff_summary=diff_summary,
         workflow_run_url=workflow_run_url,
+        is_budget_stop=(trigger == EscalationTrigger.DAILY_COST_SPIKE),
     ).text
 
     # Push channel: ping the operator's phone via Google Chat if configured.
@@ -342,30 +350,51 @@ def _send_escalation(
     # guaranteed durable record, so a Chat failure never loses the escalation.
     if cfg.google_chat_webhook_url:
         try:
-            card = build_escalation_card(
-                project_name=cfg.project_name,
-                pr_number=pr_number,
-                pr_url=pr_url,
-                pr_title=pr_title,
-                tier=tier,
-                reason_short=reason_short,
-                reviewer_summaries=reviewer_summaries,
-                approve_url=build_approve_url(
-                    cfg.approve_webapp_url or "",
-                    repo=cfg.repo_name,
+            if trigger == EscalationTrigger.DAILY_COST_SPIKE:
+                # Budget stop: the bot paused on money, not a review — show the
+                # spend + an Increase-limit action, NOT Approve/Approve&Merge
+                # (which could 'approve' a PR no reviewer looked at).
+                card = build_budget_escalation_card(
+                    project_name=cfg.project_name,
                     pr_number=pr_number,
-                    action="approve",
-                    signing_secret=cfg.approve_signing_secret or "",
-                ),
-                approve_merge_url=build_approve_url(
-                    cfg.approve_webapp_url or "",
-                    repo=cfg.repo_name,
+                    pr_url=pr_url,
+                    spent_usd=(
+                        spent_usd
+                        if spent_usd is not None
+                        else sum((spend_breakdown or {}).values())
+                    ),
+                    ceiling_usd=cfg.daily_cost_ceiling_usd,
+                    breakdown=spend_breakdown,
+                    increase_url=build_increase_limit_url(
+                        f"{cfg.repo_owner}/{cfg.repo_name}"
+                    ),
+                    pr_title=pr_title,
+                )
+            else:
+                card = build_escalation_card(
+                    project_name=cfg.project_name,
                     pr_number=pr_number,
-                    action="approve_merge",
-                    signing_secret=cfg.approve_signing_secret or "",
-                ),
-                spend_breakdown=spend_breakdown,
-            )
+                    pr_url=pr_url,
+                    pr_title=pr_title,
+                    tier=tier,
+                    reason_short=reason_short,
+                    reviewer_summaries=reviewer_summaries,
+                    approve_url=build_approve_url(
+                        cfg.approve_webapp_url or "",
+                        repo=cfg.repo_name,
+                        pr_number=pr_number,
+                        action="approve",
+                        signing_secret=cfg.approve_signing_secret or "",
+                    ),
+                    approve_merge_url=build_approve_url(
+                        cfg.approve_webapp_url or "",
+                        repo=cfg.repo_name,
+                        pr_number=pr_number,
+                        action="approve_merge",
+                        signing_secret=cfg.approve_signing_secret or "",
+                    ),
+                    spend_breakdown=spend_breakdown,
+                )
             send_chat_message(cfg.google_chat_webhook_url, card)
         except Exception as exc:  # noqa: BLE001
             # Never raise: the durable channels still run below.
@@ -1136,12 +1165,18 @@ def _run_review_round(
         # "all in-flight reviews are paused" behavior. Attach the per-model 24h
         # breakdown so the operator sees what drove the spend.
         spend_breakdown = None
-        if decision.trigger == EscalationTrigger.DAILY_COST_SPIKE:
+        is_budget_stop = decision.trigger == EscalationTrigger.DAILY_COST_SPIKE
+        if is_budget_stop:
             _pause_all_in_flight(api, reason="24h dispatcher spend ceiling reached")
             try:
+                # daily_total (the 24h total behind the ceiling decision, set
+                # above) stays authoritative; refresh only the per-provider
+                # breakdown for the card.
                 _, spend_breakdown = global_state.get_24h_breakdown(api)
             except Exception:  # noqa: BLE001
-                spend_breakdown = round_by_provider
+                # Breakdown unavailable — show none rather than this round's spend
+                # mislabeled as 24h; the total (daily_total) is still accurate.
+                spend_breakdown = None
         _send_escalation(
             cfg=cfg,
             api=api,
@@ -1158,6 +1193,8 @@ def _run_review_round(
             diff_summary=f"{len(changed_files)} file(s) changed",
             workflow_run_url=workflow_run_url,
             spend_breakdown=spend_breakdown,
+            spent_usd=daily_total if is_budget_stop else None,
+            trigger=decision.trigger,
         )
 
     return 0

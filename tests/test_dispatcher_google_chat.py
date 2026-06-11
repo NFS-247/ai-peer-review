@@ -207,6 +207,76 @@ def test_budget_warning_card_shows_breakdown():
     assert "gemini $9.00" in text  # the dominant model is named first
 
 
+def test_budget_escalation_card_omits_approve_buttons():
+    # THE fix: a spend-ceiling stop must NOT offer Approve / Approve & Merge — the
+    # bot paused on money (maybe with zero reviews), so approving could merge an
+    # unreviewed PR. Buttons match the message: Increase limit + Open PR only.
+    card = gc.build_budget_escalation_card(
+        project_name="TradeWatcher", pr_number=133,
+        pr_url="https://github.com/NFS-247/StockTrader/pull/133",
+        spent_usd=15.68, ceiling_usd=15.0,
+        breakdown={"claude": 13.11, "gpt": 1.86, "gemini": 0.71},
+        increase_url="https://github.com/NFS-247/StockTrader/edit/HEAD/.peer-review.json",
+    )
+    buttons = card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+    texts = [b["text"] for b in buttons]
+    assert texts == ["💵 Increase limit", "Open PR #133"]
+    assert "Approve" not in " ".join(texts)
+    assert buttons[0]["onClick"]["openLink"]["url"].endswith("/.peer-review.json")
+
+
+def test_budget_escalation_card_shows_spend_and_ceiling():
+    card = gc.build_budget_escalation_card(
+        project_name="P", pr_number=1, pr_url="http://x/1",
+        spent_usd=15.68, ceiling_usd=15.0,
+        breakdown={"claude": 13.11, "gpt": 1.86},
+    )
+    c = card["cardsV2"][0]["card"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "$15.68" in text and "$15.00" in text
+    assert "24h spend:" in text and "claude $13.11" in text
+    assert "$15.68 / $15.00" in c["header"]["subtitle"]
+
+
+def test_budget_escalation_card_open_only_without_increase_url():
+    card = gc.build_budget_escalation_card(
+        project_name="P", pr_number=2, pr_url="http://x/2",
+        spent_usd=5.0, ceiling_usd=5.0,
+    )
+    buttons = card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+    assert [b["text"] for b in buttons] == ["Open PR #2"]
+
+
+def test_build_increase_limit_url():
+    assert gc.build_increase_limit_url("NFS-247/StockTrader") == (
+        "https://github.com/NFS-247/StockTrader/edit/HEAD/.peer-review.json"
+    )
+    # malformed 'owner/name' -> "" (never an "owner/" or "/name" link)
+    for bad in ("", "owner-only", "owner/", "/name"):
+        assert gc.build_increase_limit_url(bad) == ""
+
+
+def test_budget_escalation_card_includes_pr_title():
+    card = gc.build_budget_escalation_card(
+        project_name="P", pr_number=1, pr_url="http://x/1",
+        spent_usd=5.0, ceiling_usd=5.0, pr_title="Repoint dispatcher <x>",
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "Repoint dispatcher" in text          # operator context preserved
+    assert "&lt;x&gt;" in text                    # and HTML-escaped
+
+
+def test_budget_escalation_card_no_spend_line_without_breakdown():
+    # 24h breakdown unavailable -> show the total but NOT a misleading per-model line.
+    card = gc.build_budget_escalation_card(
+        project_name="P", pr_number=1, pr_url="http://x/1",
+        spent_usd=15.68, ceiling_usd=15.0, breakdown=None,
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "$15.68" in text
+    assert "24h spend:" not in text
+
+
 def test_send_requires_url():
     with pytest.raises(ValueError):
         gc.send_chat_message("", {"text": "hi"})

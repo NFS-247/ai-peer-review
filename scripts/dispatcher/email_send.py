@@ -74,8 +74,16 @@ def build_escalation_email(
     head_sha: str,
     diff_summary: str,
     workflow_run_url: str,
+    is_budget_stop: bool = False,
 ) -> EmailMessage:
-    """Build the escalation email per Section 6 of the design doc."""
+    """Build the escalation email per Section 6 of the design doc.
+
+    For a budget stop (``is_budget_stop``) the "Your call" section omits OPERATOR
+    APPROVE — reviews may not have run, so approving would mark an UNREVIEWED PR
+    ready. The operator is pointed at raising the ceiling instead. This keeps the
+    email + durable PR-comment consistent with the Chat budget card (no approve
+    path on a money stop), across every channel.
+    """
 
     subject = f"[{project_name}] PR #{pr_number} — {reason_short}"
 
@@ -83,6 +91,38 @@ def build_escalation_email(
         f"{name + ':':<8} {summary}"
         for name, summary in reviewer_summaries.items()
     ) or "(no reviewers responded yet)"
+
+    if is_budget_stop:
+        your_call = (
+            "== Your call ==\n"
+            "Reviews are PAUSED on the 24h spend ceiling — reviewers may not have "
+            "run on this PR, so there is nothing reviewed to approve. To resume, "
+            "raise daily_cost_ceiling_usd in .peer-review.json. Other options:\n"
+            "  OPERATOR PAUSE   stop touching this PR until OPERATOR RESUME\n"
+            "  OPERATOR KILL    close this PR (branch is NOT deleted)\n"
+            "Approving is intentionally not offered here — it would mark an "
+            "unreviewed PR ready to merge."
+        )
+    else:
+        your_call = (
+            "== Your call ==\n"
+            "Reply on the PR with one of (matches Section 7 of the design doc):\n"
+            "  OPERATOR APPROVE\n"
+            "      add approving review; mark ready for operator merge;\n"
+            "      dispatcher does NOT merge. You merge manually on GitHub.\n"
+            "  OPERATOR BLOCK <reason>\n"
+            "      add changes-requested review with reason; pause dispatcher loop\n"
+            "  OPERATOR INVESTIGATE <note>\n"
+            "      send PR back to reviewers for another round with note as context\n"
+            "  OPERATOR DISCUSS <your text>\n"
+            "      post your text as a PR comment, triggers a new review round\n"
+            "  OPERATOR PAUSE\n"
+            "      dispatcher stops touching this PR until OPERATOR RESUME\n"
+            "  OPERATOR RESUME\n"
+            "      re-enable dispatcher on a paused PR\n"
+            "  OPERATOR KILL\n"
+            "      close PR only. Branch is NOT deleted (no contents:write)."
+        )
 
     text = f"""\
 PR:      {pr_url}
@@ -96,23 +136,7 @@ Branch:  {branch}
 == Reviewer summary ==
 {reviewer_lines}
 
-== Your call ==
-Reply on the PR with one of (matches Section 7 of the design doc):
-  OPERATOR APPROVE
-      add approving review; mark ready for operator merge;
-      dispatcher does NOT merge. You merge manually on GitHub.
-  OPERATOR BLOCK <reason>
-      add changes-requested review with reason; pause dispatcher loop
-  OPERATOR INVESTIGATE <note>
-      send PR back to reviewers for another round with note as context
-  OPERATOR DISCUSS <your text>
-      post your text as a PR comment, triggers a new review round
-  OPERATOR PAUSE
-      dispatcher stops touching this PR until OPERATOR RESUME
-  OPERATOR RESUME
-      re-enable dispatcher on a paused PR
-  OPERATOR KILL
-      close PR only. Branch is NOT deleted (no contents:write).
+{your_call}
 
 == CI status ==
 {ci_status} on commit {head_sha}
