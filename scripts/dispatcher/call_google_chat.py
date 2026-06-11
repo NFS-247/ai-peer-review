@@ -322,19 +322,34 @@ def build_disagreement_card(
     read the concerns and reply OPERATOR INVESTIGATE/BLOCK. Approve is a legitimate
     override here precisely because the reviewers ran.
     """
-    approving = [n for n, v in reviewer_summaries.items() if "approve" in str(v).lower()]
-    blocking = [n for n, v in reviewer_summaries.items() if n not in approving]
+    # Bucket reviewers by verdict. A reviewer that errored / only commented / has
+    # no verdict must NOT be shown as "want changes" — on a human-override card,
+    # mislabeling who's blocking drives the wrong decision. Sort each bucket so the
+    # output never depends on the caller's mapping order.
+    buckets: dict[str, list[str]] = {"approve": [], "block": [], "other": []}
+    for name, verdict in reviewer_summaries.items():
+        s = str(verdict).lower()
+        if "approve" in s:
+            buckets["approve"].append(name)
+        elif "request_changes" in s or "block" in s:
+            buckets["block"].append(name)
+        else:
+            buckets["other"].append(name)
     parts = []
-    if approving:
-        parts.append(f"✅ approve: {_esc(', '.join(approving))}")
-    if blocking:
-        parts.append(f"✋ want changes: {_esc(', '.join(blocking))}")
-    split_html = f"{'  ·  '.join(parts)}<br>" if parts else ""
+    if buckets["approve"]:
+        parts.append(f"✅ approve: {_esc(', '.join(sorted(buckets['approve'])))}")
+    if buckets["block"]:
+        parts.append(f"✋ want changes: {_esc(', '.join(sorted(buckets['block'])))}")
+    if buckets["other"]:
+        parts.append(f"❔ no clear verdict: {_esc(', '.join(sorted(buckets['other'])))}")
+    # The blank-line separator lives inside split_html, so there's no stray break
+    # when there are no parts.
+    split_html = f"{'  ·  '.join(parts)}<br><br>" if parts else ""
 
     body = (
         f"<b>{_esc(pr_title)}</b><br>"
         f"<b>Reviewers couldn't agree</b> — {_esc(reason_short)}.<br>"
-        f"{split_html}<br>"
+        f"{split_html}"
         "Your call: <b>Approve</b> to override and mark ready, or open the PR to "
         "read the concerns and reply <b>OPERATOR INVESTIGATE &lt;note&gt;</b> "
         "(send back) or <b>OPERATOR BLOCK</b>."
@@ -355,8 +370,8 @@ def build_disagreement_card(
                 "cardId": f"disagreement-pr-{pr_number}",
                 "card": {
                     "header": {
-                        "title": f"{project_name}: PR #{pr_number} — reviewers split",
-                        "subtitle": f"tier: {tier} · {reason_short}",
+                        "title": f"{_esc(project_name)}: PR #{pr_number} — reviewers split",
+                        "subtitle": f"tier: {_esc(tier)} · {_esc(reason_short)}",
                     },
                     "sections": [
                         {

@@ -318,6 +318,32 @@ def test_disagreement_card_escapes_html_in_title():
     assert "&lt;script&gt;" in text and "<script>" not in text
 
 
+def test_disagreement_card_buckets_non_verdict_reviewers():
+    # A reviewer that errored / only commented must NOT show as 'want changes' —
+    # it goes to a separate bucket so the override decision isn't misled.
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=5, pr_url="http://x/5", pr_title="t",
+        tier="high_stakes", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "request_changes", "gpt": "approve",
+                            "gemini": "error"},
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "✋ want changes: claude" in text
+    assert "✅ approve: gpt" in text
+    assert "no clear verdict: gemini" in text          # errored reviewer, not a blocker
+    assert "want changes: claude, gemini" not in text  # gemini is NOT lumped in
+
+
+def test_disagreement_card_split_is_sorted_regardless_of_input_order():
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="t",
+        tier="high_stakes", reason_short="r",
+        reviewer_summaries={"gpt": "request_changes", "claude": "request_changes"},
+    )
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "✋ want changes: claude, gpt" in text       # sorted, not input order
+
+
 def test_send_requires_url():
     with pytest.raises(ValueError):
         gc.send_chat_message("", {"text": "hi"})

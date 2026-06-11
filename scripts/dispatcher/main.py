@@ -385,8 +385,11 @@ def _send_escalation(
                     tier=tier,
                     reason_short=reason_short,
                     reviewer_summaries=reviewer_summaries,
+                    # Only offer one-tap Approve when it can be HMAC-signed — an
+                    # unsigned link is rejected by the Apps Script (and unsafe if a
+                    # backend were lax), so omit it without a signing secret.
                     approve_url=build_approve_url(
-                        cfg.approve_webapp_url or "",
+                        (cfg.approve_webapp_url or "") if cfg.approve_signing_secret else "",
                         repo=cfg.repo_name,
                         pr_number=pr_number,
                         action="approve",
