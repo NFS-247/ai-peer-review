@@ -18,6 +18,7 @@ and from the workflow permissions.
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,6 +29,53 @@ from .redact import redact
 
 
 GITHUB_API = "https://api.github.com"
+
+# Statuses safe to retry: the request was rejected BEFORE GitHub processed it,
+# so retrying cannot double-apply a write (e.g. double-post a comment). 429 =
+# rate limited / secondary limit, 503 = service unavailable. A primary
+# rate-limit also arrives as 403 with rate-limit headers (handled separately).
+# 500/502/504 are deliberately NOT retried — they may have been partially
+# processed, and a blind retry of a POST could duplicate a comment.
+_RETRYABLE_STATUS = frozenset({429, 503})
+_MAX_ATTEMPTS = 4
+_BASE_DELAY = 1.0
+_MAX_DELAY = 30.0  # cap every wait so a job never hangs near the Actions timeout
+
+
+def _sleep(seconds: float) -> None:
+    """Indirection so tests can monkeypatch the backoff wait to a no-op."""
+    time.sleep(seconds)
+
+
+def _is_rate_limited_403(exc: urllib.error.HTTPError, detail: str) -> bool:
+    """A 403 that is really a rate limit (vs a genuine permission denial)."""
+    if exc.code != 403:
+        return False
+    headers = exc.headers or {}
+    if (headers.get("X-RateLimit-Remaining") or "").strip() == "0":
+        return True
+    if headers.get("Retry-After"):
+        return True
+    low = (detail or "").lower()
+    return "rate limit" in low or "secondary rate" in low
+
+
+def _retry_delay(exc: urllib.error.HTTPError, attempt: int) -> float:
+    """Seconds to wait before a retry, honoring Retry-After / reset, capped."""
+    headers = exc.headers or {}
+    ra = headers.get("Retry-After")
+    if ra:
+        try:
+            return min(float(ra), _MAX_DELAY)
+        except (TypeError, ValueError):
+            pass
+    reset = headers.get("X-RateLimit-Reset")
+    if reset:
+        try:
+            return min(max(float(reset) - time.time(), 0.0), _MAX_DELAY)
+        except (TypeError, ValueError):
+            pass
+    return min(_BASE_DELAY * (2 ** (attempt - 1)), _MAX_DELAY)
 
 
 @dataclass(frozen=True)
@@ -55,6 +103,9 @@ class GitHubAPI:
         self._token = token
         self._owner = owner
         self._repo = repo
+        # marker -> issue number, learned once per run so repeated ledger
+        # lookups fetch the issue directly instead of re-listing every issue.
+        self._marker_issue_cache: dict[str, int] = {}
 
     # ---- internals -------------------------------------------------------
 
@@ -68,30 +119,44 @@ class GitHubAPI:
     ) -> object:
         url = f"{GITHUB_API}{path}"
         data = None if body is None else json.dumps(body).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data,
-            method=method,
-            headers={
-                "Authorization": f"Bearer {self._token}",
-                "Accept": accept,
-                "User-Agent": "TradeWatcher-Dispatcher/1.0",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "Content-Type": "application/json",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                payload_bytes = resp.read()
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
-            raise RuntimeError(
-                f"GitHub API {method} {path} HTTP {exc.code}: {detail[:500]}"
-            ) from exc
-
-        if raw:
-            return payload_bytes.decode("utf-8", errors="replace")
-        return json.loads(payload_bytes.decode("utf-8")) if payload_bytes else {}
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": accept,
+            "User-Agent": "TradeWatcher-Dispatcher/1.0",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        }
+        # Retry transient rate limits (429 / rate-limit 403 / 503) with capped
+        # backoff so a momentary limit no longer fails a whole round. Writes are
+        # only retried when GitHub rejected them before processing (see
+        # _RETRYABLE_STATUS), so a comment is never double-posted.
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            req = urllib.request.Request(url, data=data, method=method, headers=headers)
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    payload_bytes = resp.read()
+                if raw:
+                    return payload_bytes.decode("utf-8", errors="replace")
+                return json.loads(payload_bytes.decode("utf-8")) if payload_bytes else {}
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+                retryable = exc.code in _RETRYABLE_STATUS or _is_rate_limited_403(exc, detail)
+                if retryable and attempt < _MAX_ATTEMPTS:
+                    _sleep(_retry_delay(exc, attempt))
+                    continue
+                raise RuntimeError(
+                    f"GitHub API {method} {path} HTTP {exc.code}: {detail[:500]}"
+                ) from exc
+            except urllib.error.URLError as exc:
+                # A network error on a GET is safe to retry; a write may have
+                # been applied server-side, so non-GETs are not blindly retried.
+                if method == "GET" and attempt < _MAX_ATTEMPTS:
+                    _sleep(min(_BASE_DELAY * (2 ** (attempt - 1)), _MAX_DELAY))
+                    continue
+                raise RuntimeError(
+                    f"GitHub API {method} {path} failed: {exc.reason}"
+                ) from exc
+        raise RuntimeError(f"GitHub API {method} {path}: exhausted retries")
 
     # ---- PR data ---------------------------------------------------------
 
@@ -239,9 +304,16 @@ class GitHubAPI:
             body={"state": "closed"},
         )
 
-    def list_open_pull_numbers(self) -> list[int]:
-        """Return the numbers of all open pull requests (paginated)."""
-        out: list[int] = []
+    def list_open_pulls_with_labels(self) -> list[tuple[int, list[str]]]:
+        """(number, label-names) for every open PR, in ONE paginated list call.
+
+        The pulls list response already embeds each PR's labels, so callers that
+        only need to filter by label (the scheduled sweep, the pause-all sweep)
+        get them here instead of a per-PR ``list_labels`` round-trip — turning
+        O(1 + N) API calls into O(1). This is the main lever against the
+        per-repo rate limit on a busy repo.
+        """
+        out: list[tuple[int, list[str]]] = []
         page = 1
         while True:
             data = self._request(
@@ -250,16 +322,47 @@ class GitHubAPI:
             )
             if not isinstance(data, list) or not data:
                 break
-            out.extend(int(item.get("number")) for item in data if item.get("number"))
+            for item in data:
+                num = item.get("number")
+                if not num:
+                    continue
+                labels = [
+                    l.get("name", "")
+                    for l in (item.get("labels") or [])
+                    if isinstance(l, dict)
+                ]
+                out.append((int(num), labels))
             if len(data) < 100:
                 break
             page += 1
         return out
 
+    def list_open_pull_numbers(self) -> list[int]:
+        """Numbers of all open pull requests (derived from the labelled list)."""
+        return [n for n, _labels in self.list_open_pulls_with_labels()]
+
     # ---- issues (used for the global 24h spend ledger) ------------------
 
     def find_issue_by_marker(self, marker: str) -> Optional[dict]:
-        """Return the first open non-PR issue whose body contains ``marker``."""
+        """Return the first open non-PR issue whose body contains ``marker``.
+
+        The ledger lookup happens several times per round; the first call learns
+        the issue number and caches it, so subsequent calls fetch that issue
+        directly (one cheap GET, fresh body) instead of re-listing every open
+        issue. Falls back to a full scan if the cached issue no longer matches.
+        """
+        cached = self._marker_issue_cache.get(marker)
+        if cached is not None:
+            try:
+                issue = self._request(
+                    "GET", f"/repos/{self._owner}/{self._repo}/issues/{cached}"
+                )
+            except RuntimeError:
+                issue = None
+            if isinstance(issue, dict) and marker in (issue.get("body") or ""):
+                return issue
+            self._marker_issue_cache.pop(marker, None)  # stale; rescan below
+
         data = self._request(
             "GET",
             f"/repos/{self._owner}/{self._repo}/issues?state=open&per_page=100",
@@ -270,6 +373,9 @@ class GitHubAPI:
             if item.get("pull_request"):  # PRs appear here too; skip them
                 continue
             if marker in (item.get("body") or ""):
+                num = item.get("number")
+                if num:
+                    self._marker_issue_cache[marker] = int(num)
                 return item
         return None
 

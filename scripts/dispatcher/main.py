@@ -550,12 +550,13 @@ def _run_cooldown_sweep(*, cfg: DispatcherConfig, api: GitHubAPI) -> int:
     if not cfg.verdict_secret:
         return 0
     try:
-        pr_numbers = api.list_open_pull_numbers()
+        # Labels come back with the PR list, so non-dispatcher PRs are filtered
+        # out without a per-PR label call (rate-limit friendly on busy repos).
+        pulls = api.list_open_pulls_with_labels()
     except Exception:  # noqa: BLE001
         return 0
-    for n in pr_numbers:
+    for n, labels in pulls:
         try:
-            labels = api.list_labels(n)
             if not any(lbl.startswith(label_state.TIER_LABEL_PREFIX) for lbl in labels):
                 continue
             _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=n)
@@ -1126,12 +1127,11 @@ def _pause_all_in_flight(api: GitHubAPI, *, reason: str) -> None:
     individual PRs do not abort the sweep.
     """
     try:
-        pr_numbers = api.list_open_pull_numbers()
+        pulls = api.list_open_pulls_with_labels()  # labels inline -> no per-PR call
     except Exception:  # noqa: BLE001
         return
-    for n in pr_numbers:
+    for n, labels in pulls:
         try:
-            labels = api.list_labels(n)
             if not any(lbl.startswith(label_state.TIER_LABEL_PREFIX) for lbl in labels):
                 continue
             if label_state.LABEL_PAUSED in labels:
