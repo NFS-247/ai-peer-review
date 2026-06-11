@@ -340,3 +340,51 @@ def test_construction_validates_inputs():
     for bad_app_id in ("", "   ", None):
         with pytest.raises(ValueError):
             GitHubApp(bad_app_id, _pkcs1_pem(KN, KE, KD))     # empty / missing id
+
+
+def test_pkcs8_rejects_non_rsa_oid():
+    # An EC/Ed25519 PKCS#8 key would otherwise parse as RSA and yield nonsense;
+    # the OID check turns it into a clear misconfig error.
+    inner = _der_seq(_der_uint(0), _der_uint(KN), _der_uint(KE), _der_uint(KD))
+    ec_alg = _der_seq(bytes.fromhex("06072a8648ce3d0201"))  # id-ecPublicKey OID
+    info = _der_seq(_der_uint(0), ec_alg, _der_tlv(0x04, inner))
+    with pytest.raises(ValueError):
+        _parse_rsa_private_key(_pem("PRIVATE KEY", info))
+
+
+def test_parse_expires_at_handles_z_suffix():
+    # GitHub returns RFC3339 with a trailing 'Z'; fromisoformat rejects it before
+    # Python 3.11, so it is normalized to +00:00.
+    z = A._parse_expires_at("2026-06-11T12:00:00Z")
+    offset = A._parse_expires_at("2026-06-11T12:00:00+00:00")
+    assert z is not None and z == offset
+
+
+def test_jwt_is_cached_within_validity():
+    registered = []
+    now = [1000.0]
+    request, _calls = _fake_github()
+    app = _app(now=lambda: now[0], request=request, register_secret=registered.append)
+    first = app._jwt()
+    app._jwt()                                       # within window -> cached, no re-sign
+    now[0] += 421                                    # past the ~7-min cache window
+    third = app._jwt()
+    assert third != first
+    assert registered == [first, third]              # signed/registered once per JWT
+
+
+def test_api_request_malformed_json_is_transient(monkeypatch):
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"<html>not json</html>"
+
+    monkeypatch.setattr(A.urllib.request, "urlopen", lambda req, timeout=0: _Resp())
+    with pytest.raises(A.GitHubAppError) as ei:
+        A._api_request("POST", "https://api.github.com/x", jwt="h.p.s")
+    assert ei.value.status is None                   # malformed response -> transient

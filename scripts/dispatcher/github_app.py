@@ -45,6 +45,10 @@ _TOKEN_TTL_SECONDS = 3000
 _TOKEN_EXPIRY_SKEW = 600  # refresh this long before the API-reported expiry
 _JWT_BACKDATE_SECONDS = 60
 _JWT_LIFETIME_SECONDS = 480
+_JWT_CACHE_SECONDS = 420  # reuse a minted JWT this long (< its 8-min validity)
+
+# DER value (tag/length stripped) of the rsaEncryption OID 1.2.840.113549.1.1.1.
+_RSA_ENCRYPTION_OID = bytes.fromhex("2a864886f70d010101")
 
 
 def _b64url(data: bytes) -> str:
@@ -61,8 +65,11 @@ def _parse_expires_at(value: Optional[str]) -> Optional[float]:
     """Epoch seconds for GitHub's ISO-8601 ``expires_at``, or None if unparseable."""
     if not value:
         return None
+    text = value.strip()
+    if text.endswith("Z"):  # fromisoformat rejects a trailing 'Z' before Py 3.11
+        text = text[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(value).timestamp()
+        return datetime.fromisoformat(text).timestamp()
     except (ValueError, TypeError):
         return None
 
@@ -123,7 +130,10 @@ def _parse_rsa_private_key(pem: str) -> tuple[int, int]:
             _, info, _ = _der_read_tlv(der, 0)      # PrivateKeyInfo SEQUENCE
             j = 0
             _, _ver, j = _der_read_tlv(info, j)     # version
-            _, _alg, j = _der_read_tlv(info, j)     # AlgorithmIdentifier
+            _, alg, j = _der_read_tlv(info, j)      # AlgorithmIdentifier SEQUENCE
+            oid_tag, oid, _ = _der_read_tlv(alg, 0)  # algorithm OID
+            if oid_tag != 0x06 or oid != _RSA_ENCRYPTION_OID:
+                raise ValueError("not an RSA key (unsupported PKCS#8 algorithm)")
             _, der, j = _der_read_tlv(info, j)      # privateKey OCTET STRING -> DER
 
         tag, seq, _ = _der_read_tlv(der, 0)         # RSAPrivateKey SEQUENCE
@@ -221,7 +231,7 @@ def _api_request(
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         # Surface a useful status + body, but raise our own error so the request
         # (with its Authorization: Bearer <JWT> header) can't ride into a CI log.
@@ -234,6 +244,15 @@ def _api_request(
         # Transport-level failure (DNS / connection / timeout): no HTTP status.
         raise GitHubAppError(
             f"GitHub App API {method} {url} failed: {exc.reason}", status=None
+        ) from exc
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        # A malformed body on an otherwise-OK response is a GitHub-side glitch,
+        # not a misconfig — classify transient (no status) so callers can degrade.
+        raise GitHubAppError(
+            f"GitHub App API {method} {url} failed: malformed JSON response",
+            status=None,
         ) from exc
 
 
@@ -269,13 +288,21 @@ class GitHubApp:
         # tokens, both bearer creds) so the caller can register them with its
         # redactor — see GitHubAPI.from_app.
         self._register_secret = register_secret
+        self._jwt_cache: Optional[tuple[str, float]] = None
         self._token_cache: dict[int, tuple[str, float]] = {}
         self._install_cache: dict[tuple[str, str], int] = {}
 
     def _jwt(self) -> str:
-        jwt = _sign_jwt(self._app_id, self._n, self._d, now=self._now())
+        # Reuse a minted JWT within its validity so a long-lived process doesn't
+        # re-sign (and re-register a new secret) on every uncached mint.
+        now = self._now()
+        cached = self._jwt_cache
+        if cached is not None and cached[1] > now:
+            return cached[0]
+        jwt = _sign_jwt(self._app_id, self._n, self._d, now=now)
         if self._register_secret is not None:
             self._register_secret(jwt)  # scrub from any later log/comment
+        self._jwt_cache = (jwt, now + _JWT_CACHE_SECONDS)
         return jwt
 
     def installation_id_for_repo(self, owner: str, repo: str) -> int:

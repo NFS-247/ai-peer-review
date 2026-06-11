@@ -1214,7 +1214,12 @@ def _build_github_api(cfg: DispatcherConfig) -> GitHubAPI:
         )
     except Exception as exc:  # noqa: BLE001 - classify, then degrade or fail loud
         status = getattr(exc, "status", None)
-        transient = isinstance(exc, GitHubAppError) and (status is None or status >= 500)
+        # Transient = network/transport (no status), a rate limit (429), or a
+        # GitHub-side 5xx. A 4xx (bad creds / app-not-installed) or a non-API
+        # error (e.g. a bad-key ValueError) is a misconfig and is NOT degraded.
+        transient = isinstance(exc, GitHubAppError) and (
+            status is None or status == 429 or status >= 500
+        )
         if not (transient and cfg.github_token):
             raise  # misconfig, or nothing to fall back to -> surfaced by run()
         print(

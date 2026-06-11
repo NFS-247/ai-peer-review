@@ -126,12 +126,12 @@ class GitHubAPI:
         """
         from .github_app import GitHubApp  # optional path; keep the import local
         from .redact import register_secret
+        # The minter registers the JWT + installation token via this hook as it
+        # mints them, so both bearer creds are scrubbed before first use.
         minter = app or GitHubApp(
             app_id, private_key_pem, register_secret=register_secret
         )
-        token = minter.token_for_repo(owner, repo)
-        register_secret(token)  # the bearer token rides every request; scrub it
-        return cls(token, owner, repo)
+        return cls(minter.token_for_repo(owner, repo), owner, repo)
 
     # ---- internals -------------------------------------------------------
 

@@ -92,8 +92,9 @@ def _raises(exc):
 
 
 @pytest.mark.parametrize("exc", [
-    GitHubAppError("github 503", status=503),   # 5xx -> transient
-    GitHubAppError("dns failure", status=None),  # network -> transient
+    GitHubAppError("github 503", status=503),    # 5xx -> transient
+    GitHubAppError("rate limited", status=429),   # 429 -> transient
+    GitHubAppError("dns failure", status=None),   # network -> transient
 ])
 def test_build_github_api_falls_back_on_transient(monkeypatch, capsys, exc):
     # A transient fault degrades to GITHUB_TOKEN (loudly) rather than losing the run.
