@@ -108,14 +108,38 @@ ai-peer-review.schema.json config field reference
 
 ## Versioning
 
-Consuming repos track the **`@v2` branch**, so engine fixes — new escalation
+Consuming repos track the **`@v2` branch**, so engine changes — new escalation
 cards, timeout tuning, security patches — reach every project automatically on
-its next run, with no per-repo bump. The trade-off is deliberate: this org owns
-all its consumers and wants fixes to propagate, rather than freezing each repo
-on an old snapshot. (The earlier `@v1` *tag* did exactly that silently — repos
-pinned to it never received a single update; that's the trap this replaces.) A
-repo that genuinely needs to freeze can pin a specific commit SHA instead of
-`@v2`.
+its next run, with no per-repo bump.
+
+Be clear-eyed about the trade-off: a branch ref means **every** change merged to
+`@v2` propagates the same way — including a regression, a breaking change, or a
+model swap that silently raises AI cost. Two things make that acceptable here:
+(1) every change to `@v2` first passes through this dispatcher's **own
+3-reviewer gate** — the money-path, escalation-correctness, and stdlib checks
+run on each PR before it can merge; and (2) the org owns all its consumers and
+*wants* fixes to land without chasing a bump in each repo — the opposite of the
+old `@v1` *tag*, which silently froze every repo on a 65-commit-old snapshot that
+never updated (the trap this replaces). A repo that cannot tolerate auto-updates
+should pin a specific commit **SHA** instead of `@v2`.
+
+**Freeze a repo with a SHA.** A full commit SHA never moves:
+
+```yaml
+      - uses: NFS-247/ai-peer-review@4fa52dfc9b9be09e5d672618a51551f283c72274
+        # frozen at a known-good commit; bump deliberately when you choose to
+```
+
+**`v2` is a branch, never a tag.** GitHub Actions ref resolution is ambiguous
+when a tag and a branch share a name, so a `v2` *tag* could silently shadow the
+`v2` *branch* every consumer runs. **Never create a `v2` tag.** (`v1` is the
+legacy frozen tag; `v2` is the live branch — don't blur them.)
+
+**Keep `v2` protected.** Because any push to `v2` reaches every consumer at once,
+the branch must have protection on — **no force-pushes, require the PR review +
+status checks** before merge — so an unreviewed or rewritten commit can't change
+behavior fleet-wide. See
+[GitHub branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches).
 
 ## Cut 1 — multi-tenancy across NFS-247's repos
 

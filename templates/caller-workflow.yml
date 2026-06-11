@@ -6,9 +6,15 @@
 # from NFS-247/ai-peer-review (via `@v2`) and posts signed verdicts.
 #
 # The dispatcher code is fetched automatically by `uses:` — no PAT, no
-# cross-repo checkout. Track @v2 (a branch): engine fixes and new escalation
-# cards reach every repo automatically on its next run, nothing to bump. Need a
-# specific repo frozen instead? Pin a commit SHA in place of @v2.
+# cross-repo checkout. Track @v2 (a branch): every change merged to @v2 — fixes
+# and new cards, but ALSO any regression or cost-raising model swap — reaches
+# every repo automatically on its next run (each change clears the dispatcher's
+# own 3-reviewer gate first).
+#
+# v2 is a BRANCH — never create a "v2" tag (a same-named tag can shadow it). To
+# freeze THIS repo on a fixed version, pin a full commit SHA instead of @v2:
+#     uses: NFS-247/ai-peer-review@<full-commit-sha>
+# The v2 branch is kept protected: no force-push, PR + checks required to merge.
 
 name: AI Peer Review
 
