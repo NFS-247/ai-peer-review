@@ -1193,19 +1193,31 @@ def _pause_all_in_flight(api: GitHubAPI, *, reason: str) -> None:
 
 def _build_github_api(cfg: DispatcherConfig) -> GitHubAPI:
     """Prefer a GitHub App installation token (per-tenant rate budget) when App
-    credentials are configured; otherwise use the workflow GITHUB_TOKEN.
+    credentials are configured; otherwise the workflow GITHUB_TOKEN.
 
-    An App-minting failure is intentionally NOT swallowed: if you configured App
-    creds you want them used, and a silent fall-through to GITHUB_TOKEN would mask
-    a misconfiguration behind the very rate limit the App exists to avoid.
+    If minting the App token fails (a transient GitHub error, or a misconfigured
+    App), fall back to GITHUB_TOKEN when one is present — but log loudly to stderr
+    so the failure is visible rather than silently running on the wrong bucket. A
+    transient blip shouldn't crash the run; with no token to fall back to there is
+    nothing to do but re-raise.
     """
     if cfg.github_app_id and cfg.github_app_private_key:
-        return GitHubAPI.from_app(
-            app_id=cfg.github_app_id,
-            private_key_pem=cfg.github_app_private_key,
-            owner=cfg.repo_owner,
-            repo=cfg.repo_name,
-        )
+        try:
+            return GitHubAPI.from_app(
+                app_id=cfg.github_app_id,
+                private_key_pem=cfg.github_app_private_key,
+                owner=cfg.repo_owner,
+                repo=cfg.repo_name,
+            )
+        except Exception as exc:  # noqa: BLE001 - degrade gracefully, don't crash
+            if not cfg.github_token:
+                raise
+            print(
+                f"GitHub App token mint failed "
+                f"({type(exc).__name__}: {redact(str(exc))}); falling back to "
+                f"GITHUB_TOKEN for this run.",
+                file=sys.stderr,
+            )
     return GitHubAPI(cfg.github_token, cfg.repo_owner, cfg.repo_name)
 
 

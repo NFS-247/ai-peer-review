@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from scripts.dispatcher import main
 from scripts.dispatcher.config import load_from_env
 from scripts.dispatcher.github_api import GitHubAPI
@@ -80,3 +82,31 @@ def test_config_app_credentials_default_empty():
     cfg = load_from_env({"GITHUB_TOKEN": "tok"})
     assert cfg.github_app_id == ""
     assert cfg.github_app_private_key == ""
+
+
+def _boom(**kw):
+    raise RuntimeError("mint blew up")
+
+
+def test_build_github_api_falls_back_when_mint_fails(monkeypatch, capsys):
+    # A transient mint failure degrades to GITHUB_TOKEN (loudly) rather than
+    # crashing the run.
+    monkeypatch.setattr(main.GitHubAPI, "from_app", _boom)
+    cfg = SimpleNamespace(
+        github_app_id="1", github_app_private_key="K",
+        github_token="tok", repo_owner="o", repo_name="r",
+    )
+    api = main._build_github_api(cfg)
+    assert api._token == "tok"
+    assert "mint failed" in capsys.readouterr().err.lower()
+
+
+def test_build_github_api_reraises_mint_failure_without_token(monkeypatch):
+    # App-only setup (no GITHUB_TOKEN to fall back to): the failure propagates.
+    monkeypatch.setattr(main.GitHubAPI, "from_app", _boom)
+    cfg = SimpleNamespace(
+        github_app_id="1", github_app_private_key="K",
+        github_token="", repo_owner="o", repo_name="r",
+    )
+    with pytest.raises(RuntimeError):
+        main._build_github_api(cfg)

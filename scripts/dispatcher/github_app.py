@@ -26,7 +26,9 @@ import base64
 import hashlib
 import json
 import time
+import urllib.error
 import urllib.request
+from datetime import datetime
 from typing import Callable, Optional
 
 
@@ -40,6 +42,7 @@ _SHA256_DIGESTINFO_PREFIX = bytes.fromhex("3031300d06096086480165030402010500042
 # an about-to-expire token. The JWT is backdated 60s (clock drift) and lives 8m,
 # inside GitHub's 10-minute ceiling — it is used immediately, only to mint.
 _TOKEN_TTL_SECONDS = 3000
+_TOKEN_EXPIRY_SKEW = 600  # refresh this long before the API-reported expiry
 _JWT_BACKDATE_SECONDS = 60
 _JWT_LIFETIME_SECONDS = 480
 
@@ -54,6 +57,16 @@ def _compact_json(obj: dict) -> bytes:
     return json.dumps(obj, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
 
+def _parse_expires_at(value: Optional[str]) -> Optional[float]:
+    """Epoch seconds for GitHub's ISO-8601 ``expires_at``, or None if unparseable."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
 def _der_read_tlv(data: bytes, i: int) -> tuple[int, bytes, int]:
     """Read one DER TLV at ``data[i]``; return (tag, value_bytes, next_index)."""
     tag = data[i]
@@ -61,6 +74,10 @@ def _der_read_tlv(data: bytes, i: int) -> tuple[int, bytes, int]:
     i += 2
     if length & 0x80:  # long form: low 7 bits = number of length bytes
         num = length & 0x7F
+        if num == 0:
+            # 0x80 = indefinite length: forbidden in DER, and would otherwise
+            # misparse as a zero-length value. Reject rather than silently corrupt.
+            raise ValueError("indefinite-length DER is not supported")
         length = int.from_bytes(data[i:i + num], "big")
         i += num
     return tag, data[i:i + length], i + length
@@ -91,22 +108,27 @@ def _parse_rsa_private_key(pem: str) -> tuple[int, int]:
     except Exception as exc:  # noqa: BLE001 - normalize to a clear error
         raise ValueError(f"invalid PEM base64: {exc}") from exc
 
-    if "BEGIN PRIVATE KEY" in text:  # PKCS#8: unwrap to the inner RSAPrivateKey
-        _, info, _ = _der_read_tlv(der, 0)          # PrivateKeyInfo SEQUENCE
-        j = 0
-        _, _ver, j = _der_read_tlv(info, j)         # version
-        _, _alg, j = _der_read_tlv(info, j)         # AlgorithmIdentifier
-        _, der, j = _der_read_tlv(info, j)          # privateKey OCTET STRING -> DER
+    try:
+        if "BEGIN PRIVATE KEY" in text:  # PKCS#8: unwrap to the RSAPrivateKey
+            _, info, _ = _der_read_tlv(der, 0)      # PrivateKeyInfo SEQUENCE
+            j = 0
+            _, _ver, j = _der_read_tlv(info, j)     # version
+            _, _alg, j = _der_read_tlv(info, j)     # AlgorithmIdentifier
+            _, der, j = _der_read_tlv(info, j)      # privateKey OCTET STRING -> DER
 
-    tag, seq, _ = _der_read_tlv(der, 0)             # RSAPrivateKey SEQUENCE
-    if tag != 0x30:
-        raise ValueError("malformed RSA private key (expected a SEQUENCE)")
-    j = 0
-    _, _v, j = _der_read_tlv(seq, j)                # version
-    _, n_bytes, j = _der_read_tlv(seq, j)           # modulus
-    _, _e, j = _der_read_tlv(seq, j)                # publicExponent
-    _, d_bytes, j = _der_read_tlv(seq, j)           # privateExponent
-    return int.from_bytes(n_bytes, "big"), int.from_bytes(d_bytes, "big")
+        tag, seq, _ = _der_read_tlv(der, 0)         # RSAPrivateKey SEQUENCE
+        if tag != 0x30:
+            raise ValueError("expected a SEQUENCE")
+        j = 0
+        _, _v, j = _der_read_tlv(seq, j)            # version
+        _, n_bytes, j = _der_read_tlv(seq, j)       # modulus
+        _, _e, j = _der_read_tlv(seq, j)            # publicExponent
+        _, d_bytes, j = _der_read_tlv(seq, j)       # privateExponent
+        return int.from_bytes(n_bytes, "big"), int.from_bytes(d_bytes, "big")
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - truncated/garbage DER -> clear error
+        raise ValueError(f"malformed RSA private key: {exc}") from exc
 
 
 def _sign_rs256(message: bytes, n: int, d: int) -> bytes:
@@ -168,8 +190,16 @@ def _api_request(
             "Content-Type": "application/json",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # Surface a useful status + body, but raise our own error so the request
+        # (with its Authorization: Bearer <JWT> header) can't ride into a CI log.
+        detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        raise RuntimeError(
+            f"GitHub App API {method} {url} failed: HTTP {exc.code}: {detail[:300]}"
+        ) from exc
 
 
 class GitHubApp:
@@ -188,8 +218,9 @@ class GitHubApp:
         api_url: str = GITHUB_API,
         now: Callable[[], float] = time.time,
         request: Callable[..., dict] = _api_request,
+        register_secret: Optional[Callable[[str], None]] = None,
     ) -> None:
-        if not app_id:
+        if app_id is None or not str(app_id).strip():
             raise ValueError("app_id is required")
         # Validate the key up front so a bad secret fails at construction, not
         # mid-run on the first mint.
@@ -199,11 +230,18 @@ class GitHubApp:
         self._api_url = api_url.rstrip("/")
         self._now = now
         self._request = request
+        # Optional sink for minted credentials (the App JWT and installation
+        # tokens, both bearer creds) so the caller can register them with its
+        # redactor — see GitHubAPI.from_app.
+        self._register_secret = register_secret
         self._token_cache: dict[int, tuple[str, float]] = {}
         self._install_cache: dict[tuple[str, str], int] = {}
 
     def _jwt(self) -> str:
-        return build_app_jwt(self._app_id, self._pem, now=self._now())
+        jwt = build_app_jwt(self._app_id, self._pem, now=self._now())
+        if self._register_secret is not None:
+            self._register_secret(jwt)  # scrub from any later log/comment
+        return jwt
 
     def installation_id_for_repo(self, owner: str, repo: str) -> int:
         """Resolve (and cache) the installation id covering ``owner/repo``."""
@@ -233,7 +271,15 @@ class GitHubApp:
             jwt=self._jwt(),
         )
         token = data["token"]
-        self._token_cache[installation_id] = (token, now + _TOKEN_TTL_SECONDS)
+        if self._register_secret is not None:
+            self._register_secret(token)
+        # Cache until ~10 min before the API-reported expiry, capped at 50 min —
+        # robust to a shorter-than-usual token lifetime, never serving a stale one.
+        ttl = _TOKEN_TTL_SECONDS
+        expires = _parse_expires_at(data.get("expires_at"))
+        if expires is not None:
+            ttl = min(ttl, max(expires - now - _TOKEN_EXPIRY_SKEW, 0.0))
+        self._token_cache[installation_id] = (token, now + ttl)
         return token
 
     def token_for_repo(self, owner: str, repo: str) -> str:
