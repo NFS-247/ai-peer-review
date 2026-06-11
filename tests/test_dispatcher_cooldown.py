@@ -180,6 +180,7 @@ class FakeAPI:
     def submit_review(self, n, *, event, body=""): self.reviews.append((n, event))
     def close_pr(self, n): return {}
     def list_open_pull_numbers(self): return [101]
+    def list_open_pulls_with_labels(self): return [(101, list(self.labels.get(101, [])))]
     def find_issue_by_marker(self, marker): return None
     def create_issue(self, t, b): return {"number": 1}
     def update_issue_body(self, num, b): return {}

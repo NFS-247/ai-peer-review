@@ -76,6 +76,8 @@ class FakeAPI:
         return {}
     def close_pr(self, n): return {}
     def list_open_pull_numbers(self): return list(self._open_prs)
+    def list_open_pulls_with_labels(self):
+        return [(n, list(self.labels.get(n, []))) for n in self._open_prs]
 
     # issues (global spend ledger)
     def find_issue_by_marker(self, marker):
