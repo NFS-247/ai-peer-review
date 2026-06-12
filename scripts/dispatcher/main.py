@@ -390,11 +390,15 @@ def _send_escalation(
                 # Only offer one-tap Approve when it can be HMAC-signed; skip the
                 # builder entirely unless BOTH the web app and the signing secret
                 # are set, so no unsigned or partial link is ever produced.
-                approve_url = investigate_url = block_url = ""
+                approve_url = approve_merge_url = investigate_url = block_url = ""
                 if cfg.approve_webapp_url and cfg.approve_signing_secret:
                     approve_url = build_approve_url(
                         cfg.approve_webapp_url, repo=cfg.repo_name,
                         pr_number=pr_number, action="approve",
+                        signing_secret=cfg.approve_signing_secret)
+                    approve_merge_url = build_approve_url(
+                        cfg.approve_webapp_url, repo=cfg.repo_name,
+                        pr_number=pr_number, action="approve_merge",
                         signing_secret=cfg.approve_signing_secret)
                     investigate_url = build_approve_url(
                         cfg.approve_webapp_url, repo=cfg.repo_name,
@@ -413,6 +417,7 @@ def _send_escalation(
                     reason_short=reason_short,
                     reviewer_summaries=reviewer_summaries,
                     approve_url=approve_url,
+                    approve_merge_url=approve_merge_url,
                     investigate_url=investigate_url,
                     block_url=block_url,
                 )

@@ -530,3 +530,41 @@ def test_plain_escalation_lead_known_and_unknown():
     assert "protected files" in gc.plain_escalation_lead("high_stakes_auto")
     # blank or unknown both resolve to the same safe fallback
     assert gc.plain_escalation_lead("") == gc.plain_escalation_lead("nope")
+
+
+def test_disagreement_card_all_approved_not_split_offers_merge():
+    # Everyone approved but it didn't auto-converge (hard round cap with CI pending
+    # / head moved): the card must NOT say "split", and it SHOULD offer merge.
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=111, pr_url="http://x/111", pr_title="T",
+        tier="high_stakes", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "approve (round 6)", "gpt": "approve (round 6)",
+                            "gemini": "approve (round 6)"},
+        approve_url="http://a", approve_merge_url="http://m",
+        investigate_url="http://i", block_url="http://b",
+    )
+    c = card["cardsV2"][0]["card"]
+    assert "reviewers split" not in c["header"]["title"]
+    assert "approved — needs you" in c["header"]["title"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "All reviewers approved" in text and "couldn't agree" not in text
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" in texts                 # the fix
+    assert "✅ Approve & mark ready" in texts
+
+
+def test_disagreement_card_contested_stays_split_no_merge():
+    # Genuine dissent: keep the "split" framing and WITHHOLD one-tap merge, even
+    # when an approve_merge link is available.
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=9, pr_url="http://x/9", pr_title="T",
+        tier="backend", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "request_changes (round 6)", "gpt": "approve (round 6)"},
+        approve_url="http://a", approve_merge_url="http://m",
+    )
+    c = card["cardsV2"][0]["card"]
+    assert "reviewers split" in c["header"]["title"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "Reviewers couldn't agree" in text and "✋ want changes: claude" in text
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" not in texts             # never one-tap-merge a contested PR
