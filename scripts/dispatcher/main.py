@@ -349,6 +349,7 @@ def _send_escalation(
         diff_summary=diff_summary,
         workflow_run_url=workflow_run_url,
         is_budget_stop=(trigger == EscalationTrigger.DAILY_COST_SPIKE),
+        trigger=trigger.value if trigger else "",
     ).text
 
     # Push channel: ping the operator's phone via Google Chat if configured.
@@ -1190,12 +1191,20 @@ def _run_review_round(
     # ---- decide what to persist + whether/when to notify, then write state ONCE
     ready = convergence.converged and decision.trigger == EscalationTrigger.NONE
     deferred = False
+    fire_now = False
     if ready:
         # The stall (if any) resolved; drop any pending/fired escalation state.
         cross.clear_pending_escalation()
         cross.escalated_head_sha = ""
     elif decision.trigger != EscalationTrigger.NONE:
-        if should_defer_escalation(
+        if cross.escalated_head_sha and cross.escalated_head_sha == head_sha:
+            # Already escalated this EXACT head — do not fire a second card. A new
+            # commit supersedes (cleared above on the head change) and re-arms; a
+            # re-review or re-delivered event on the same head must produce no
+            # duplicate ping. This is the #100 duplicate-escalation fix for the
+            # immediate path, mirroring _run_convergence_only's same-head guard.
+            pass
+        elif should_defer_escalation(
             trigger=decision.trigger,
             cooldown_minutes=cfg.escalation_cooldown_minutes,
             converged=convergence.converged,
@@ -1214,13 +1223,12 @@ def _run_review_round(
         else:
             # Fire immediately — an infra/budget stop, OR a converged escalation
             # (head-lock / suspicious-unanimous) where the PR is done and only
-            # waiting on the operator, so there's no iteration to wait out.
+            # waiting on the operator, so there's no iteration to wait out. Anchor
+            # to THIS head (unconditionally now) so a new commit supersedes it and
+            # a repeat run on the same head dedupes via the guard above.
             cross.clear_pending_escalation()
-            if convergence.converged:
-                # Tie a converged escalation to THIS head so a new commit
-                # supersedes it (re-review) and a repeat run dedupes — parity with
-                # the deferred sweep and the CI-complete immediate-fire path.
-                cross.escalated_head_sha = head_sha
+            cross.escalated_head_sha = head_sha
+            fire_now = True
 
     label_state.write_cross_run_state(api, pr_number, cross, secret)
 
@@ -1239,12 +1247,13 @@ def _run_review_round(
         )
         return 0
 
-    if decision.trigger != EscalationTrigger.NONE:
-        if deferred:
-            # The cooldown may already have elapsed (e.g. an INVESTIGATE re-run
-            # on a head that's been quiet); fire now if due, else stay silent.
-            _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=pr_number)
-            return 0
+    if deferred:
+        # The cooldown may already have elapsed (e.g. an INVESTIGATE re-run
+        # on a head that's been quiet); fire now if due, else stay silent.
+        _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=pr_number)
+        return 0
+
+    if fire_now:
         label_state.set_escalated(api, pr_number, api.list_labels(pr_number))
         # The 24h global spend trigger is a project-wide safety stop: pause
         # ALL in-flight PRs (not just this one), matching the design's stated

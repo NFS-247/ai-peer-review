@@ -59,6 +59,18 @@ _PLAIN_LEAD: dict[str, str] = {
     "suspicious_unanimous":
         "Every reviewer approved this fast on a high-stakes change. Worth a quick "
         "gut-check before it goes.",
+    # Disagreement / cost leads below are consumed by the EMAIL + durable
+    # PR-comment (the Chat side routes these triggers to their own richer cards);
+    # they give that plaintext channel the same human first line.
+    "hard_round_cap":
+        "The reviewers used up their rounds without fully agreeing — your call to "
+        "break the tie: approve it, send it back, or block it.",
+    "cost_spike":
+        "This PR spent its review budget without the reviewers agreeing — your "
+        "call before it spends any more.",
+    "daily_cost_spike":
+        "Reviews are paused — the project hit its daily AI-review spending limit. "
+        "Raise the limit to resume.",
 }
 _PLAIN_LEAD_FALLBACK = "This PR is stuck and waiting on your decision."
 
@@ -72,6 +84,18 @@ def plain_escalation_lead(trigger: str) -> str:
     unexpected trigger never hides its diagnostics behind a generic line.
     """
     return _PLAIN_LEAD.get(trigger, _PLAIN_LEAD_FALLBACK)
+
+
+def known_plain_lead(trigger: str) -> str:
+    """Plain lead for a RECOGNIZED trigger, else ``""`` (no generic fallback).
+
+    Unlike ``plain_escalation_lead``, returns ``""`` for a blank/unknown trigger
+    so a caller can fall back to the engine's literal reason — keeping the real
+    diagnostics visible — instead of masking it with a generic sentence. The
+    email/PR-comment builder uses this: it carries every trigger and wants the
+    plain lead only when we actually have human copy for it.
+    """
+    return _PLAIN_LEAD.get(trigger, "")
 
 
 # When a reviewer's own API is what's down, the button that makes sense isn't
@@ -540,4 +564,6 @@ __all__ = [
     "build_approve_url",
     "sign_action",
     "send_chat_message",
+    "plain_escalation_lead",
+    "known_plain_lead",
 ]

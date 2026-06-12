@@ -4,9 +4,10 @@ Three layers:
 - pure cooldown_elapsed() decision,
 - CrossRunState pending-escalation round-trip + back-compat (a state with no
   pending escalation must still verify against pre-Cut-1 signed comments),
-- orchestrator behavior: a reviewer dissent does NOT ping mid-iteration; the
-  ping fires only once the dev agent goes quiet past the cooldown; a new commit
-  supersedes; infra/budget escalations still ping immediately.
+- orchestrator behavior: plain reviewer dissent now stays SILENT entirely (the
+  dev agent owns iteration); a still-deferring stuck-signal (a non-converged
+  head-lock PR) defers, fires once the dev agent goes quiet past the cooldown,
+  and is superseded by a new commit; infra/budget escalations ping immediately.
 """
 
 import scripts.dispatcher.main as M
@@ -230,9 +231,11 @@ def _clock(monkeypatch, holder):
     monkeypatch.setattr(M, "_now_ts", lambda: holder["t"])
 
 
-def test_first_dissent_defers_no_ping(monkeypatch):
-    # An unknown path -> high_stakes tier; a single reviewer requests changes on
-    # round 1. Pre-Cut-1 this pinged immediately (HIGH_STAKES_FIRST_DISSENT).
+def test_plain_dissent_stays_silent(monkeypatch):
+    # New model: an unknown path -> high_stakes tier; a single reviewer requests
+    # changes on round 1. Pre-Cut-1 this pinged immediately; under Cut-1 it
+    # deferred (HIGH_STAKES_FIRST_DISSENT). NOW plain dissent is suppressed
+    # entirely — the dev agent owns iteration — so nothing is pinged OR pending.
     api = FakeAPI(files=["weird/unknown.txt"])  # unknown -> high_stakes
     cfg = _cfg(cooldown=10)
     holder = {"t": 1000.0}
@@ -241,20 +244,22 @@ def test_first_dissent_defers_no_ping(monkeypatch):
 
     M._run_review_round(cfg=cfg, api=api, pr_number=101)
 
-    # Deferred: no escalation label, no operator ping/comment yet.
+    # No escalation label, no operator ping/comment — and crucially nothing
+    # queued for a later sweep either.
     assert label_state.LABEL_ESCALATED not in api.labels.get(101, [])
     assert "needs you" not in api.comment_texts(101)
     assert "Escalation" not in api.comment_texts(101)
-    # But the stall is recorded for later.
     cross = label_state.read_cross_run_state(api, 101, "github-actions[bot]", "sek")
-    assert cross.has_pending_escalation()
-    assert cross.pending_escalation_trigger == "high_stakes_first_dissent"
-    assert cross.pending_escalation_head_sha == "headsha1"
+    assert cross.has_pending_escalation() is False
 
 
+# The deferral machinery below is now driven by a still-deferring stuck-signal: a
+# NON-converged high-stakes PR touching a head-lock path (HIGH_STAKES_AUTO). It
+# needs operator sign-off but the dev agent is still iterating, so it defers until
+# the agent goes quiet — exactly the case the cooldown timer exists for.
 def test_sweep_does_not_fire_before_cooldown(monkeypatch):
     api = FakeAPI(files=["weird/unknown.txt"])
-    cfg = _cfg(cooldown=10)
+    cfg = _cfg(cooldown=10, head_lock=("weird/**",))
     holder = {"t": 1000.0}
     _clock(monkeypatch, holder)
     monkeypatch.setattr(M, "_build_client", lambda r, c: DissentClient(r))
@@ -267,7 +272,7 @@ def test_sweep_does_not_fire_before_cooldown(monkeypatch):
 
 def test_sweep_fires_after_cooldown(monkeypatch):
     api = FakeAPI(files=["weird/unknown.txt"])
-    cfg = _cfg(cooldown=10)
+    cfg = _cfg(cooldown=10, head_lock=("weird/**",))
     holder = {"t": 1000.0}
     _clock(monkeypatch, holder)
     monkeypatch.setattr(M, "_build_client", lambda r, c: DissentClient(r))
@@ -287,7 +292,7 @@ def test_sweep_fires_after_cooldown(monkeypatch):
 
 def test_new_commit_resets_timer_no_ping(monkeypatch):
     api = FakeAPI(files=["weird/unknown.txt"])
-    cfg = _cfg(cooldown=10)
+    cfg = _cfg(cooldown=10, head_lock=("weird/**",))
     holder = {"t": 1000.0}
     _clock(monkeypatch, holder)
     _monotonic_verdict_clock(monkeypatch)
