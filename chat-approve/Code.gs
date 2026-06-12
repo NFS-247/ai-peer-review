@@ -1,8 +1,9 @@
 /**
  * AI Peer Review — one-tap operator approve / approve+merge from Google Chat.
  *
- * The dispatcher's escalation card shows "✅ Approve" and "🚀 Approve & Merge"
- * buttons. Each links here with ?repo=&pr=&action=&sig= where sig is an HMAC
+ * The dispatcher's cards show "✅ Approve", "🚀 Approve & Merge", "🔄 Send back"
+ * (INVESTIGATE) and "✋ Block" buttons. Each links here with ?repo=&pr=&action=&sig=
+ * where sig is an HMAC
  * the dispatcher computed over "repo:pr:action". This script recomputes the
  * HMAC and refuses anything that doesn't match — so a leaked or hand-edited
  * link (pr=90 → pr=99) is rejected.
@@ -51,7 +52,12 @@ function doGet(e) {
       ' / ' + escapeHtml(action) + '. It may have been edited or is stale.');
   }
 
-  var command = { approve: 'OPERATOR APPROVE', approve_merge: 'OPERATOR APPROVE' }[action];
+  var command = {
+    approve: 'OPERATOR APPROVE',
+    approve_merge: 'OPERATOR APPROVE',
+    investigate: 'OPERATOR INVESTIGATE operator requested another round from chat',
+    block: 'OPERATOR BLOCK operator blocked from chat'
+  }[action];
   if (!command) {
     return page('❌ Bad request', 'Unknown action: ' + escapeHtml(action));
   }
@@ -98,6 +104,18 @@ function doGet(e) {
       '<a href="' + prUrl + '">Open PR #' + escapeHtml(pr) + ' to merge →</a>');
   }
 
+  if (action === 'investigate') {
+    return page('🔄 Sent back',
+      'Posted <b>OPERATOR INVESTIGATE</b> on <b>' + escapeHtml(repo) + ' #' + escapeHtml(pr) +
+      '</b>. The reviewers will run another round.<br><br>' +
+      '<a href="' + prUrl + '">Open PR #' + escapeHtml(pr) + '</a>');
+  }
+  if (action === 'block') {
+    return page('✋ Blocked',
+      'Posted <b>OPERATOR BLOCK</b> on <b>' + escapeHtml(repo) + ' #' + escapeHtml(pr) +
+      '</b>. The dispatcher will pause this PR until you resume it.<br><br>' +
+      '<a href="' + prUrl + '">Open PR #' + escapeHtml(pr) + '</a>');
+  }
   return page('✅ Approved',
     'Posted on <b>' + escapeHtml(repo) + ' #' + escapeHtml(pr) + '</b>. ' +
     'The dispatcher will add its approving review.<br><br>' +
