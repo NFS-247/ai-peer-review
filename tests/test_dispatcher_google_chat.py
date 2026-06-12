@@ -306,6 +306,37 @@ def test_disagreement_card_omits_approve_without_url():
     )
     buttons = card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]
     assert [b["text"] for b in buttons] == ["Open PR #1"]
+    # No webapp -> the body keeps the typed-command instructions so the operator
+    # still knows how to act from the PR itself.
+    text = card["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "OPERATOR INVESTIGATE" in text
+
+
+def test_disagreement_card_one_tap_send_back_and_block():
+    # With the approve-webapp configured, the card offers one-tap Send back
+    # (INVESTIGATE) and Block alongside Approve — no typed OPERATOR commands.
+    card = gc.build_disagreement_card(
+        project_name="TradeWatcher", pr_number=140,
+        pr_url="https://github.com/NFS-247/StockTrader/pull/140",
+        pr_title="Collapse /ui", tier="high_stakes",
+        reason_short="high-stakes dissent on first review",
+        reviewer_summaries={"gemini": "approve", "claude": "request_changes",
+                            "gpt": "request_changes"},
+        approve_url="https://script.google.com/exec?action=approve&sig=a",
+        investigate_url="https://script.google.com/exec?action=investigate&sig=b",
+        block_url="https://script.google.com/exec?action=block&sig=c",
+    )
+    c = card["cardsV2"][0]["card"]
+    btns = c["sections"][0]["widgets"][1]["buttonList"]["buttons"]
+    assert [b["text"] for b in btns] == [
+        "✅ Approve & mark ready", "🔄 Send back (1 more round)", "✋ Block", "Open PR #140",
+    ]
+    assert btns[1]["onClick"]["openLink"]["url"].endswith("action=investigate&sig=b")
+    assert btns[2]["onClick"]["openLink"]["url"].endswith("action=block&sig=c")
+    # body steers to the buttons, not typed commands
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "Tap a button below" in text
+    assert "OPERATOR INVESTIGATE" not in text
 
 
 def test_disagreement_card_escapes_html_in_title():

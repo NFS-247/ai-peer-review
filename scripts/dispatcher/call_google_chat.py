@@ -399,6 +399,8 @@ def build_disagreement_card(
     reason_short: str,
     reviewer_summaries: Mapping[str, str],
     approve_url: str = "",
+    investigate_url: str = "",
+    block_url: str = "",
 ) -> dict:
     """Card for a reviewers-couldn't-converge escalation (a deadlock).
 
@@ -407,7 +409,9 @@ def build_disagreement_card(
     stop, this IS an approval moment — so the card shows WHO is split and offers
     the tie-breaker: Approve & mark ready (override the holdouts), or Open PR to
     read the concerns and reply OPERATOR INVESTIGATE/BLOCK. Approve is a legitimate
-    override here precisely because the reviewers ran.
+    override here precisely because the reviewers ran. When ``investigate_url`` /
+    ``block_url`` are set (signed approve-webapp links), those become one-tap
+    buttons too — Send back (another round) and Block — so no command typing.
     """
     # Bucket reviewers by verdict. A reviewer that errored / only commented / has
     # no verdict must NOT be shown as "want changes" — on a human-override card,
@@ -436,19 +440,37 @@ def build_disagreement_card(
     # when there are no parts.
     split_html = f"{'  ·  '.join(parts)}<br><br>" if parts else ""
 
+    # One-tap buttons replace the typed OPERATOR commands when the approve-webapp
+    # is configured; otherwise fall back to the command prose.
+    if approve_url or investigate_url or block_url:
+        instructions = ("Tap a button below, or open the PR to read the concerns "
+                        "first.")
+    else:
+        instructions = (
+            "Your call: <b>Approve</b> to override and mark ready, or open the PR "
+            "to read the concerns and reply <b>OPERATOR INVESTIGATE &lt;note&gt;</b> "
+            "(send back) or <b>OPERATOR BLOCK</b>."
+        )
     body = (
         f"<b>{_esc(pr_title)}</b><br>"
         f"<b>Reviewers couldn't agree</b> — {_esc(reason_short)}.<br>"
         f"{split_html}"
-        "Your call: <b>Approve</b> to override and mark ready, or open the PR to "
-        "read the concerns and reply <b>OPERATOR INVESTIGATE &lt;note&gt;</b> "
-        "(send back) or <b>OPERATOR BLOCK</b>."
+        f"{instructions}"
     )
 
     buttons = []
     if approve_url:
         buttons.append(
             {"text": "✅ Approve & mark ready", "onClick": {"openLink": {"url": approve_url}}}
+        )
+    if investigate_url:
+        buttons.append(
+            {"text": "🔄 Send back (1 more round)",
+             "onClick": {"openLink": {"url": investigate_url}}}
+        )
+    if block_url:
+        buttons.append(
+            {"text": "✋ Block", "onClick": {"openLink": {"url": block_url}}}
         )
     buttons.append(
         {"text": f"Open PR #{pr_number}", "onClick": {"openLink": {"url": pr_url}}}
