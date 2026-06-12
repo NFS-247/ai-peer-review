@@ -4,6 +4,7 @@ from scripts.dispatcher.converge import ConvergenceState
 from scripts.dispatcher.escalation import (
     EscalationTrigger,
     decide_escalation,
+    should_defer_escalation,
 )
 
 
@@ -292,3 +293,31 @@ def test_required_reviewer_unavailable_escalates_immediately():
         required_reviewer_unavailable=True,
     )
     assert d.trigger == EscalationTrigger.REQUIRED_REVIEWER_UNAVAILABLE
+
+
+def test_should_defer_escalation_only_while_iterating():
+    # The cooldown exists to avoid pinging mid-fix, so it applies ONLY while the
+    # PR is still iterating. A converged PR is done and waiting on the operator,
+    # so its escalation must fire immediately — this is the "all approved, needs
+    # your signature" ping that used to get silently dropped behind a flaky sweep.
+    gated = EscalationTrigger.HIGH_STAKES_AUTO  # a cooldown-gated trigger
+
+    # not converged + cooldown on -> defer (don't buzz mid-iteration)
+    assert should_defer_escalation(trigger=gated, cooldown_minutes=10, converged=False) is True
+    # CONVERGED -> never defer, even with a cooldown configured
+    assert should_defer_escalation(trigger=gated, cooldown_minutes=10, converged=True) is False
+    # cooldown disabled -> never defer
+    assert should_defer_escalation(trigger=gated, cooldown_minutes=0, converged=False) is False
+    # a non-gated (infra/budget) trigger -> never defer
+    assert should_defer_escalation(
+        trigger=EscalationTrigger.DAILY_COST_SPIKE, cooldown_minutes=10, converged=False
+    ) is False
+    # every cooldown-gated trigger defers while iterating, fires once converged
+    for t in (
+        EscalationTrigger.DISAGREEMENT_AFTER_BUDGET,
+        EscalationTrigger.HIGH_STAKES_FIRST_DISSENT,
+        EscalationTrigger.CI_PERSISTENT_FAILURE,
+        EscalationTrigger.SUSPICIOUS_UNANIMOUS,
+    ):
+        assert should_defer_escalation(trigger=t, cooldown_minutes=10, converged=False) is True
+        assert should_defer_escalation(trigger=t, cooldown_minutes=10, converged=True) is False

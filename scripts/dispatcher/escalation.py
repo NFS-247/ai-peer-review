@@ -51,6 +51,30 @@ COOLDOWN_GATED_TRIGGERS = frozenset({
 })
 
 
+def should_defer_escalation(
+    *,
+    trigger: EscalationTrigger,
+    cooldown_minutes: int,
+    converged: bool,
+) -> bool:
+    """Whether a cooldown-gated escalation should wait for the dev agent to go quiet.
+
+    Defer ONLY while the PR is still iterating (``converged`` is False): the
+    cooldown exists so the phone doesn't buzz mid-fix while commits are still
+    landing. A CONVERGED PR is done — every required reviewer approved and it's
+    purely waiting on the operator (e.g. a head-lock sign-off) — so there is
+    nothing to interrupt. Fire it NOW rather than queue a deferred ping that
+    rides a flaky scheduled sweep; that deferral is exactly what silently dropped
+    the "all approved, needs your signature" ping on a converged head-lock PR.
+    Non-gated triggers (infra/budget stop-the-world) are never deferred.
+    """
+    return (
+        trigger in COOLDOWN_GATED_TRIGGERS
+        and cooldown_minutes > 0
+        and not converged
+    )
+
+
 # "The reviewers ran but couldn't converge" — the PR WAS reviewed and the panel is
 # split or stuck, so the operator must break the tie. These route to the
 # disagreement Chat card (which shows the split + Approve-to-override / Open PR),
@@ -241,5 +265,6 @@ __all__ = [
     "HEAD_LOCK_PATH_PATTERNS",
     "COOLDOWN_GATED_TRIGGERS",
     "DISAGREEMENT_TRIGGERS",
+    "should_defer_escalation",
     "cooldown_elapsed",
 ]
