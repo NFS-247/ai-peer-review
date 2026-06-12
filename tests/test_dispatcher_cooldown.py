@@ -16,7 +16,7 @@ from scripts.dispatcher import state as label_state
 from scripts.dispatcher.ai_client import AIResponse
 from scripts.dispatcher.config import DispatcherConfig, TierConfig
 from scripts.dispatcher.escalation import cooldown_elapsed
-from scripts.dispatcher.github_api import CheckRun, PRComment
+from scripts.dispatcher.github_api import CheckRun, PRComment, PRReview
 from scripts.dispatcher.repo_config import RepoConfig
 
 
@@ -142,6 +142,7 @@ class FakeAPI:
         self.labels: dict[int, list[str]] = {}
         self.comments: dict[int, list[str]] = {}
         self.reviews: list = []
+        self.review_records: dict[int, list[PRReview]] = {}
         self._files = files
         self._head = head
         self._ci = ci
@@ -179,7 +180,14 @@ class FakeAPI:
     def list_check_runs(self, sha):
         return [CheckRun(name="pytest", status="completed", conclusion=self._ci)]
 
-    def submit_review(self, n, *, event, body=""): self.reviews.append((n, event))
+    def submit_review(self, n, *, event, body=""):
+        self.reviews.append((n, event))
+        state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}
+        self.review_records.setdefault(n, []).append(
+            PRReview(author_login="github-actions[bot]",
+                     state=state.get(event, "COMMENTED"), commit_id=self._head))
+
+    def list_pr_reviews(self, n): return list(self.review_records.get(n, []))
     def close_pr(self, n): return {}
     def list_open_pull_numbers(self): return [101]
     def list_open_pulls_with_labels(self): return [(101, list(self.labels.get(101, [])))]
@@ -466,3 +474,87 @@ def test_operator_investigate_bypasses_update_branch_shortcut(monkeypatch):
     M._run_review_round(cfg=cfg, api=api, pr_number=101, operator_note="re-check the importer")
 
     assert called == ["claude"]   # reviewers WERE invoked despite ready + same diff
+
+
+def test_update_branch_shortcut_requires_approve_verdict(monkeypatch):
+    # Round-1 panel concern (all three reviewers): a trusted verdict on the same
+    # diff proves the diff was REVIEWED, not APPROVED. If the only verdict for
+    # the current diff_sha256 is request_changes, the shortcut must NOT fire —
+    # even with LABEL_READY present (stale/operator-applied) — and a normal
+    # round runs instead.
+    from scripts.dispatcher.verdict import (
+        build_verdict, compute_diff_sha256, compute_verdict_signature,
+    )
+    api = FakeAPI(files=["README.md"])
+    cfg = _cfg(cooldown=10)
+    diff_sha = compute_diff_sha256(api.get_pr_diff(101))
+    v = build_verdict(reviewer="claude", verdict="request_changes", pr_number=101,
+                      head_sha="oldhead0", diff_sha256=diff_sha, tier="routine", round_=1)
+    sig = compute_verdict_signature(v, "sek")
+    api.comments[101] = [f"**Review from `claude`**\n\nno\n\n{v.to_yaml_block(signature=sig)}\n"]
+    api.add_labels(101, [label_state.LABEL_READY])
+    _monotonic_verdict_clock(monkeypatch)
+    called = []
+    monkeypatch.setattr(M, "_build_client", lambda r, c: called.append(r) or DissentClient(r))
+
+    M._run_review_round(cfg=cfg, api=api, pr_number=101)
+
+    assert called == ["claude"]                       # real round, not the shortcut
+    assert (101, "APPROVE") not in api.reviews        # and no bot APPROVE appeared
+
+
+def test_update_branch_reaffirm_survives_override_dissent(monkeypatch):
+    # The PR's whole point (nfs-central #107): gpt dissented, the operator
+    # overrode to ready, then Update branch dismissed the approval. An approve
+    # verdict on the same diff exists (claude's), so the override survives —
+    # re-affirm fires, with no fresh round.
+    from scripts.dispatcher.verdict import (
+        build_verdict, compute_diff_sha256, compute_verdict_signature,
+    )
+    api = FakeAPI(files=["README.md"])
+    cfg = _cfg(cooldown=10)
+    diff_sha = compute_diff_sha256(api.get_pr_diff(101))
+    comments = []
+    for reviewer, verdict in (("claude", "approve"), ("gpt", "request_changes")):
+        v = build_verdict(reviewer=reviewer, verdict=verdict, pr_number=101,
+                          head_sha="oldhead0", diff_sha256=diff_sha, tier="routine", round_=1)
+        sig = compute_verdict_signature(v, "sek")
+        comments.append(f"**Review from `{reviewer}`**\n\n.\n\n{v.to_yaml_block(signature=sig)}\n")
+    api.comments[101] = comments
+    api.add_labels(101, [label_state.LABEL_READY])
+
+    def _boom(r, c):
+        raise AssertionError("must not re-review on an update-branch")
+    monkeypatch.setattr(M, "_build_client", _boom)
+
+    M._run_review_round(cfg=cfg, api=api, pr_number=101)
+
+    assert (101, "APPROVE") in api.reviews
+
+
+def test_update_branch_shortcut_idempotent_across_reruns(monkeypatch):
+    # Round-1 panel concern (claude): a workflow re-run on a head that was
+    # already re-affirmed must not double-post APPROVE. The dismissed approval
+    # keeps the OLD head's commit_id, so "APPROVED by us on the CURRENT head"
+    # is the restore-needed signal — present means do nothing.
+    from scripts.dispatcher.verdict import (
+        build_verdict, compute_diff_sha256, compute_verdict_signature,
+    )
+    api = FakeAPI(files=["README.md"])
+    cfg = _cfg(cooldown=10)
+    diff_sha = compute_diff_sha256(api.get_pr_diff(101))
+    v = build_verdict(reviewer="claude", verdict="approve", pr_number=101,
+                      head_sha="oldhead0", diff_sha256=diff_sha, tier="routine", round_=1)
+    sig = compute_verdict_signature(v, "sek")
+    api.comments[101] = [f"**Review from `claude`**\n\nok\n\n{v.to_yaml_block(signature=sig)}\n"]
+    api.add_labels(101, [label_state.LABEL_READY])
+
+    def _boom(r, c):
+        raise AssertionError("must not re-review on an update-branch")
+    monkeypatch.setattr(M, "_build_client", _boom)
+
+    M._run_review_round(cfg=cfg, api=api, pr_number=101)
+    M._run_review_round(cfg=cfg, api=api, pr_number=101)   # re-run, same head
+
+    assert api.reviews.count((101, "APPROVE")) == 1        # exactly once
+    assert len(api.comments.get(101, [])) == 1             # and still no new comments

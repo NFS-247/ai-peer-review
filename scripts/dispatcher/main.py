@@ -962,7 +962,8 @@ def _run_review_round(
     # "Update branch" before merging — that makes a NEW head commit (so GitHub
     # dismisses the approving review) but does NOT change the PR's diff vs base. If
     # the PR is already marked ready AND the current diff has already been reviewed
-    # (a trusted verdict exists for this exact diff_sha256), the prior sign-off
+    # AND APPROVED (a trusted APPROVE verdict exists for this exact diff_sha256 —
+    # a dissent on the same diff proves review, not sign-off), the prior approval
     # still stands: re-submit the dispatcher's APPROVE review on the new head and
     # stop — no fresh round, no AI cost. A REAL change (no verdict matches the new
     # diff) falls through to a normal round. Operator INVESTIGATE/DISCUSS rounds
@@ -971,17 +972,33 @@ def _run_review_round(
         not operator_note
         and label_state.LABEL_READY in labels
         and any(
-            v.diff_sha256 == diff_sha
+            v.verdict == "approve" and v.diff_sha256 == diff_sha
             for v in _trusted_existing_verdicts(api, pr_number, secret)
         )
     ):
-        api.submit_review(
-            pr_number,
-            event="APPROVE",
-            body="Re-affirming approval after a branch update: the PR's changes are "
-                 "unchanged (only the base was merged in), so the prior sign-off "
-                 "still stands. Dispatcher does NOT merge — click merge when ready.",
+        # Idempotent: GitHub keeps a dismissed approval's commit_id (the OLD
+        # head), so "no APPROVED review by us on the CURRENT head" is exactly
+        # "the dismissal left a gap to restore". A re-run on a head we already
+        # re-affirmed (workflow re-run, reopen) finds the approval present and
+        # must not double-post.
+        already_approved = any(
+            r.author_login == DISPATCHER_BOT_LOGIN
+            and r.state == "APPROVED"
+            and r.commit_id == head_sha
+            for r in api.list_pr_reviews(pr_number)
         )
+        if not already_approved:
+            api.submit_review(
+                pr_number,
+                event="APPROVE",
+                body="Re-affirming approval after a branch update: the PR's changes "
+                     "are unchanged (only the base was merged in), so the prior "
+                     "sign-off still stands. Dispatcher does NOT merge — click merge "
+                     "when ready.",
+            )
+        # Returning here skips the round machinery on purpose: no reviewer ran,
+        # so there is no spend to ledger, no verdict to post or remember, and no
+        # escalation to consider; labels and cross-run state already say "ready".
         return 0
 
     # 24h spend at the start of this round (before reviewers) — used both for
