@@ -281,6 +281,47 @@ def test_budget_email_omits_operator_approve():
     assert "OPERATOR APPROVE" in normal                # unchanged for normal escalations
 
 
+def test_escalation_email_reads_in_plain_language():
+    # The escalation email (and durable PR-comment) leads with a human sentence
+    # instead of the engine's reason code, and trims the operator-command wall to
+    # the 3 primary actions with the rare ones on one line — matching the cards.
+    from scripts.dispatcher.escalation import EscalationTrigger
+
+    msg = email_send.build_escalation_email(
+        project_name="P", pr_number=100, pr_url="http://x/100", pr_title="T",
+        tier="high_stakes", branch="f/x", reason_short="hard round cap reached",
+        detail="PR has reached 6 review rounds without convergence.",
+        reviewer_summaries={"claude": "request_changes (round 7)",
+                            "gpt": "approve (round 7)", "gemini": "approve (round 7)"},
+        ci_status="pending", head_sha="abc1234", diff_summary="+1-0",
+        workflow_run_url="http://run",
+        trigger=EscalationTrigger.HARD_ROUND_CAP.value,
+    ).text
+
+    # plain-language lead present, with the engine's specifics kept underneath
+    assert "break the tie" in msg
+    assert "PR has reached 6 review rounds without convergence." in msg
+    # the 3 primary actions stay; the rare ones collapse to one line
+    assert "OPERATOR APPROVE" in msg
+    assert "OPERATOR INVESTIGATE" in msg and "OPERATOR BLOCK" in msg
+    assert "Rarely needed:" in msg
+    # the old verbose per-command sub-descriptions are gone
+    assert "add approving review; mark ready" not in msg
+
+
+def test_escalation_email_without_trigger_keeps_literal_detail():
+    # Back-compat: no trigger (or one we have no plain copy for) -> the literal
+    # engine detail still leads the "Why", so diagnostics are never masked.
+    msg = email_send.build_escalation_email(
+        project_name="P", pr_number=1, pr_url="http://x/1", pr_title="T",
+        tier="routine", branch="f/x", reason_short="r",
+        detail="literal engine detail", reviewer_summaries={},
+        ci_status="success", head_sha="abc", diff_summary="+1-0",
+        workflow_run_url="http://run",
+    ).text
+    assert "literal engine detail" in msg
+
+
 def test_budget_pr_comment_fallback_omits_operator_approve(tmp_path):
     # No email configured -> the durable channel is the PR comment (= body_text).
     # For a budget stop it must also omit OPERATOR APPROVE.

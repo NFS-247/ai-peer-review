@@ -126,7 +126,15 @@ def decide_escalation(
     required_reviewer_unavailable: bool = False,
     head_lock_paths: Sequence[str] = (),
 ) -> EscalationDecision:
-    """Decide whether this PR should be escalated. Order of checks matters."""
+    """Decide whether this PR should be escalated. Order of checks matters.
+
+    The operator is pinged only for decisions that are genuinely theirs — a
+    converged PR that needs merge / sign-off, a genuinely stuck loop (the hard
+    round cap), or an infra/budget stop. Mid-iteration reviewer DISSENT is owned
+    by the dev agent and is NOT escalated (see the note where the dissent checks
+    used to live); ``round_budget`` is retained for back-compat / callers but no
+    longer triggers an escalation on its own.
+    """
 
     # The 24h DAILY ceiling is a project-wide stop: it pauses OTHER in-flight
     # PRs and the operator must see it, so it escalates even if this PR has
@@ -201,21 +209,19 @@ def decide_escalation(
                    "before merge, regardless of AI convergence.",
         )
 
-    if convergence.non_approving_from:
-        if tier == "high_stakes" and round_ == 1:
-            return EscalationDecision(
-                trigger=EscalationTrigger.HIGH_STAKES_FIRST_DISSENT,
-                reason_short="high-stakes dissent on first review",
-                detail=f"Reviewers requested changes: "
-                       f"{', '.join(convergence.non_approving_from)}",
-            )
-        if round_ >= round_budget:
-            return EscalationDecision(
-                trigger=EscalationTrigger.DISAGREEMENT_AFTER_BUDGET,
-                reason_short="reviewers disagreed past round budget",
-                detail=f"After {round_} rounds, reviewers still requesting "
-                       f"changes: {', '.join(convergence.non_approving_from)}",
-            )
+    # Reviewer DISSENT mid-iteration is deliberately NOT escalated. The dev agent
+    # owns the loop — it reads the requested changes, pushes fixes, and re-runs the
+    # panel — so pinging the operator every time a reviewer asks for changes (on the
+    # first high-stakes round, or once past the soft round budget) just buzzes the
+    # phone while the agents are doing their job. The operator is pinged only when a
+    # decision is actually theirs:
+    #   • the panel converged and it's ready / needs sign-off (handled on the
+    #     convergence path and HIGH_STAKES_AUTO above),
+    #   • the loop genuinely can't progress — the HARD_ROUND_CAP backstop above, or
+    #   • the dev agent explicitly raises a hand (the OPERATOR-relay path).
+    # HIGH_STAKES_FIRST_DISSENT / DISAGREEMENT_AFTER_BUDGET remain defined (persisted
+    # deferred state and older consumer pins can still carry them) but are no longer
+    # produced here.
 
     if (
         tier == "high_stakes"

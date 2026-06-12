@@ -172,7 +172,11 @@ def test_high_stakes_head_lock_empty_by_default_no_auto_escalation():
     assert d.trigger == EscalationTrigger.NONE
 
 
-def test_high_stakes_first_dissent_escalates_immediately():
+def test_high_stakes_first_dissent_is_not_escalated():
+    # New model: mid-iteration reviewer dissent is owned by the dev agent, NOT the
+    # operator. A high-stakes round-1 dissent (no head-lock path) must stay silent
+    # — the panel keeps iterating; the operator is pinged only on convergence, a
+    # genuine stall (hard cap), or an explicit raise-hand.
     d = decide_escalation(
         tier="high_stakes",
         round_=1,
@@ -188,10 +192,12 @@ def test_high_stakes_first_dissent_escalates_immediately():
         api_outage_minutes=0,
         ci_failure_count_after_fix_attempts=0,
     )
-    assert d.trigger == EscalationTrigger.HIGH_STAKES_FIRST_DISSENT
+    assert d.trigger == EscalationTrigger.NONE
 
 
-def test_routine_dissent_at_budget_escalates():
+def test_routine_dissent_at_budget_is_not_escalated():
+    # The soft round budget no longer escalates on its own — dissent past it is
+    # still the dev agent's job, up to the HARD round cap backstop.
     d = decide_escalation(
         tier="routine",
         round_=3,
@@ -204,7 +210,7 @@ def test_routine_dissent_at_budget_escalates():
         api_outage_minutes=0,
         ci_failure_count_after_fix_attempts=0,
     )
-    assert d.trigger == EscalationTrigger.DISAGREEMENT_AFTER_BUDGET
+    assert d.trigger == EscalationTrigger.NONE
 
 
 def test_suspicious_unanimous_high_stakes_round_one():
