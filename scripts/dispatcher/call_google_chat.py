@@ -139,6 +139,8 @@ def build_escalation_card(
     reviewer_summaries: Mapping[str, str],
     approve_url: str = "",
     approve_merge_url: str = "",
+    investigate_url: str = "",
+    block_url: str = "",
     spend_breakdown: Mapping[str, float] | None = None,
     trigger: str = "",
     unavailable_reviewers: tuple[str, ...] = (),
@@ -148,8 +150,12 @@ def build_escalation_card(
     The card always carries an "Open PR" button. When ``approve_url`` is set
     (the operator's one-tap web app — see chat-approve/Code.gs) it also carries
     a "✅ Approve" button (posts OPERATOR APPROVE); when ``approve_merge_url`` is
-    set it adds a "🚀 Approve & Merge" button (approve, then merge). Both are
-    single-tap, no typing. ``spend_breakdown`` (optional), when given, adds a
+    set it adds a "🚀 Approve & Merge" button (approve, then merge). When
+    ``investigate_url`` / ``block_url`` are set (signed approve-webapp links) the
+    card also carries "🔄 Send back (1 more round)" and "✋ Block" buttons, so the
+    operator can send a head-lock / gut-check escalation back for another round
+    without opening the PR. All are single-tap, no typing. ``spend_breakdown``
+    (optional), when given, adds a
     "24h spend" line showing per-model cost so a budget-driven escalation says
     exactly where the money went. ``trigger`` (optional), the EscalationTrigger
     value as a string, swaps the engine's technical ``reason_short`` for a
@@ -164,11 +170,20 @@ def build_escalation_card(
         f"{name}: {summary}" for name, summary in reviewer_summaries.items()
     ) or "(no reviewers yet)"
 
-    if approve_url or approve_merge_url:
-        instructions = (
-            "Tap a button below, or open the PR for "
-            "<b>BLOCK</b> / <b>INVESTIGATE</b>."
-        )
+    if approve_url or approve_merge_url or investigate_url or block_url:
+        # Only point at the PR for the actions that AREN'T one-tap buttons here.
+        extras = []
+        if not investigate_url:
+            extras.append("INVESTIGATE")
+        if not block_url:
+            extras.append("BLOCK")
+        if extras:
+            instructions = (
+                "Tap a button below, or open the PR for <b>"
+                + "</b> / <b>".join(extras) + "</b>."
+            )
+        else:
+            instructions = "Tap a button below."
     else:
         instructions = (
             "Open the PR and reply with one of:<br>"
@@ -204,6 +219,15 @@ def build_escalation_card(
     if approve_merge_url:
         buttons.append(
             {"text": "🚀 Approve & Merge", "onClick": {"openLink": {"url": approve_merge_url}}}
+        )
+    if investigate_url:
+        buttons.append(
+            {"text": "🔄 Send back (1 more round)",
+             "onClick": {"openLink": {"url": investigate_url}}}
+        )
+    if block_url:
+        buttons.append(
+            {"text": "✋ Block", "onClick": {"openLink": {"url": block_url}}}
         )
     # If a reviewer's own API is the thing that's down, jump straight to its
     # provider console (check key/quota/status) — placed before "Open PR" so the
