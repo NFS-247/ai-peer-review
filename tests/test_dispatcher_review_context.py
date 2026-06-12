@@ -189,3 +189,13 @@ def test_calibration_guidance_in_common_instructions():
     assert "against THAT goal" in instr
     assert "Calibrate your concerns" in instr
     assert "operator owns that judgment" in instr
+
+
+def test_reviewers_require_context_to_approve():
+    # Reviewers must REQUIRE enough context to evaluate intent — a thin PR can't
+    # pass, which forces the dev agent to write the history/why into the PR.
+    import re
+    flat = re.sub(r"\s+", " ", build_common_instructions())
+    assert "MUST be able to state what this change is for" in flat
+    assert "do NOT approve: request changes" in flat
+    assert "required to give you that context" in flat
