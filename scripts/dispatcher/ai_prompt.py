@@ -115,6 +115,7 @@ def build_review_prompt(
     prior_review_history: Sequence[str] = (),
     operator_note: str = "",
     operator_decisions: Sequence[str] = (),
+    commit_messages: Sequence[str] = (),
     project_description: str = "",
     review_guidance: Sequence[str] = (),
 ) -> str:
@@ -123,13 +124,15 @@ def build_review_prompt(
     ``operator_note`` carries the text from an OPERATOR INVESTIGATE/DISCUSS
     command. When present it is surfaced prominently so reviewers focus on the
     operator's specific instruction for this round (design Section 7).
-    ``prior_review_history`` is the panel's earlier reviews on this PR (one
-    block per reviewer, their latest) so a reviewer has memory across rounds and
-    stops re-raising resolved concerns. ``operator_decisions`` are the owner's
-    STANDING rulings on this PR (OPERATOR APPROVE/INVESTIGATE/...): reviewers
-    honor them and do not relitigate. ``project_description`` / ``review_guidance``
-    inject the consuming repo's domain context (from its .peer-review.json) so
-    reviews are tailored per tenant instead of hard-coded to one project.
+    ``prior_review_history`` is the panel's earlier reviews on this PR (full,
+    oldest-first) so a reviewer has memory across rounds and stops re-raising
+    resolved concerns. ``operator_decisions`` are the owner's STANDING rulings on
+    this PR (OPERATOR APPROVE/INVESTIGATE/...): reviewers honor them and do not
+    relitigate. ``commit_messages`` are the PR's commit log — the author's own
+    narration of intent, which the diff alone doesn't convey.
+    ``project_description`` / ``review_guidance`` inject the consuming repo's
+    domain context (from its .peer-review.json) so reviews are tailored per
+    tenant instead of hard-coded to one project.
     """
     common = build_common_instructions(
         project_description=project_description,
@@ -159,6 +162,19 @@ def build_review_prompt(
 
             ---
         """).strip() + "\n\n"
+
+    intent_section = ""
+    if commit_messages:
+        commits = "\n\n---\n\n".join(m.strip() for m in commit_messages if m.strip())
+        if commits:
+            intent_section = dedent(f"""
+                Commit log for this PR (the author's narration of what each step
+                does — use it to understand intent; still verify against the diff):
+
+                {commits}
+
+                ---
+            """).strip() + "\n\n"
 
     operator_section = ""
     if operator_note.strip():
@@ -190,7 +206,7 @@ def build_review_prompt(
 
         ---
 
-        {decisions_section}{history_section}Diff to review:
+        {intent_section}{decisions_section}{history_section}Diff to review:
 
         {diff_text}
 

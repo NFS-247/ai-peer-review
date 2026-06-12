@@ -27,7 +27,11 @@ from typing import Optional
 
 from .ai_client import AIClient
 from .ai_prompt import build_review_prompt
-from .review_context import summarize_operator_decisions, summarize_prior_reviews
+from .review_context import (
+    summarize_commit_messages,
+    summarize_operator_decisions,
+    summarize_prior_reviews,
+)
 from .call_claude import ClaudeClient
 from .call_gemini import GeminiClient
 from .call_gpt import GPTClient
@@ -967,6 +971,12 @@ def _run_review_round(
         ((c.author_login, c.body) for c in pr_comments),
         operator_login=cfg.operator_github_login,
     )
+    # Commit log = the author's intent. Best-effort: a fetch failure (or a fake
+    # API without the method) means "no commit context", never a failed round.
+    try:
+        commit_messages = summarize_commit_messages(api.get_pr_commits(pr_number))
+    except Exception:  # noqa: BLE001
+        commit_messages = []
 
     # ---- run AI reviews for this round, tracking real cost and failures
     new_verdicts: list[Verdict] = []
@@ -989,6 +999,7 @@ def _run_review_round(
             round_=round_,
             prior_review_history=prior_review_history,
             operator_decisions=operator_decisions,
+            commit_messages=commit_messages,
             project_description=cfg.repo_config.project_description,
             review_guidance=cfg.repo_config.review_guidance,
         )

@@ -30,6 +30,10 @@ from .verdict import VERDICT_FENCE_OPEN, parse_signed_verdict_from_comment
 # context and are skipped.
 _DECISION_VERBS = frozenset({"APPROVE", "INVESTIGATE", "DISCUSS", "BLOCK"})
 
+# Auto-generated merge commits are noise, not author intent — dropped from the
+# commit-log context so reviewers see only what the author actually wrote.
+_MERGE_PREFIXES = ("Merge branch", "Merge pull request", "Merge remote-tracking")
+
 # Safety cap on each block's length so one pathological review/note can't blow up
 # the prompt (and the token bill). Reviews are normally 1-3 short paragraphs.
 _MAX_BLOCK_CHARS = 2000
@@ -118,4 +122,32 @@ def summarize_operator_decisions(
     return out
 
 
-__all__ = ["summarize_prior_reviews", "summarize_operator_decisions"]
+def summarize_commit_messages(
+    messages: Iterable[str],
+    *,
+    max_messages: int = 20,
+    max_block_chars: int = 600,
+) -> list[str]:
+    """The PR's commit messages as intent context, oldest->newest.
+
+    Drops auto-generated merge commits (noise, not author intent) and caps each
+    message's length; if more than ``max_messages`` remain, keeps the most recent
+    (the freshest narration of where the change ended up). Pure — the caller does
+    the (best-effort) fetch.
+    """
+    cleaned: list[str] = []
+    for message in messages:
+        text = (message or "").strip()
+        if not text or text.startswith(_MERGE_PREFIXES):
+            continue
+        cleaned.append(text[:max_block_chars])
+    if len(cleaned) > max_messages:
+        cleaned = cleaned[-max_messages:]
+    return cleaned
+
+
+__all__ = [
+    "summarize_prior_reviews",
+    "summarize_operator_decisions",
+    "summarize_commit_messages",
+]

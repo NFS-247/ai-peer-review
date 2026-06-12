@@ -7,6 +7,7 @@ build_review_prompt actually surfaces both — plus the calibration guidance.
 
 from scripts.dispatcher.ai_prompt import build_common_instructions, build_review_prompt
 from scripts.dispatcher.review_context import (
+    summarize_commit_messages,
     summarize_operator_decisions,
     summarize_prior_reviews,
 )
@@ -119,6 +120,30 @@ def test_operator_decisions_keep_multiline_note():
     assert len(out) == 1 and "skip DB constraints" in out[0]
 
 
+# ---- summarize_commit_messages ---------------------------------------------
+
+def test_commit_messages_drop_merge_noise_and_cap():
+    msgs = [
+        "Add vendor importer for smart headers",
+        "Merge branch 'main' into feature/x",          # noise -> dropped
+        "Fix off-by-one in header parser\n\nDetails...",
+        "Merge pull request #5 from foo/bar",          # noise -> dropped
+    ]
+    out = summarize_commit_messages(msgs)
+    assert out == [
+        "Add vendor importer for smart headers",
+        "Fix off-by-one in header parser\n\nDetails...",
+    ]
+
+
+def test_commit_messages_keep_most_recent_and_length_cap():
+    msgs = [f"commit {i}" for i in range(30)]
+    out = summarize_commit_messages(msgs, max_messages=5)
+    assert out == [f"commit {i}" for i in range(25, 30)]   # most recent kept
+    long_one = summarize_commit_messages(["x" * 5000], max_block_chars=100)
+    assert len(long_one[0]) == 100
+
+
 # ---- build_review_prompt surfaces the memory -------------------------------
 
 def test_prompt_includes_history_and_standing_decisions():
@@ -135,6 +160,17 @@ def test_prompt_includes_history_and_standing_decisions():
     # the calibration guidance is present
     assert "do NOT re-raise" in prompt
     assert "over generic best practices" in prompt
+
+
+def test_prompt_includes_commit_log_intent():
+    prompt = build_review_prompt(
+        reviewer="claude", pr_number=1, pr_title="T", pr_body="b",
+        diff_text="@@ diff @@", tier="backend", round_=1,
+        commit_messages=["Add smart importer", "Handle missing headers"],
+    )
+    assert "Commit log for this PR" in prompt
+    assert "Add smart importer" in prompt
+    assert "Handle missing headers" in prompt
 
 
 def test_prompt_omits_sections_when_no_memory():

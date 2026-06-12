@@ -214,6 +214,32 @@ class GitHubAPI:
             page += 1
         return [p for p in out if p]
 
+    def get_pr_commits(self, pr_number: int) -> list[str]:
+        """Commit messages on the PR, oldest->newest.
+
+        Intent context for reviewers — the author's own narration of what each
+        step does, which the diff alone doesn't convey. Best-effort: the caller
+        treats any failure as "no commit context" rather than failing the round.
+        """
+        out: list[str] = []
+        page = 1
+        while True:
+            page_data = self._request(
+                "GET",
+                f"/repos/{self._owner}/{self._repo}/pulls/{pr_number}/commits"
+                f"?per_page=100&page={page}",
+            )
+            if not isinstance(page_data, list) or not page_data:
+                break
+            for item in page_data:
+                message = (item.get("commit") or {}).get("message", "")
+                if message:
+                    out.append(message)
+            if len(page_data) < 100:
+                break
+            page += 1
+        return out
+
     # ---- comments --------------------------------------------------------
 
     def list_pr_comments(self, pr_number: int) -> list[PRComment]:
