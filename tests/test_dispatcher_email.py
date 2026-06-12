@@ -527,3 +527,33 @@ def test_hard_round_cap_all_approved_offers_merge(tmp_path):
     assert "approved — needs you" in c["header"]["title"]   # not "reviewers split"
     texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
     assert "🚀 Approve & Merge" in texts
+
+
+def test_hard_round_cap_missing_reviewer_withholds_merge(tmp_path):
+    # End-to-end: HARD_ROUND_CAP where one required reviewer (gemini, on the
+    # default high_stakes panel) never returned a verdict. The card must not say
+    # "approved — needs you" and must not offer one-tap merge — the expected
+    # panel comes from cfg.tiers, not just the summaries.
+    from scripts.dispatcher.escalation import EscalationTrigger
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/nfs-central",
+        "APPROVE_WEBAPP_URL": "https://script.google.com/macros/s/AB/exec",
+        "APPROVE_SIGNING_SECRET": "sec",
+    }, tmp_path)
+    sent = {}
+    with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
+        main._send_escalation(
+            cfg=cfg, api=_FakeAPI(), pr_number=112, pr_url="http://x/112", pr_title="T",
+            tier="high_stakes", branch="f/x", head_sha="abc1234",
+            reason_short="hard round cap reached", detail="d",
+            reviewer_summaries={"claude": "approve (round 6)", "gpt": "approve (round 6)"},
+            ci_status=CIStatus.SUCCESS, diff_summary="+1-0", workflow_run_url="http://run",
+            trigger=EscalationTrigger.HARD_ROUND_CAP,
+        )
+    c = sent["card"]["cardsV2"][0]["card"]
+    assert "reviews incomplete — needs you" in c["header"]["title"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "❔ no clear verdict: gemini" in text
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" not in texts

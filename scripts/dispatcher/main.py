@@ -408,6 +408,10 @@ def _send_escalation(
                         cfg.approve_webapp_url, repo=cfg.repo_name,
                         pr_number=pr_number, action="block",
                         signing_secret=cfg.approve_signing_secret)
+                # The tier's required panel: lets the card spot a reviewer that
+                # never reported at all (absent from the summaries), so it can't
+                # claim "all approved" — or offer one-tap merge — around a hole.
+                tier_cfg = cfg.tiers.get(tier)
                 card = build_disagreement_card(
                     project_name=cfg.project_name,
                     pr_number=pr_number,
@@ -416,6 +420,7 @@ def _send_escalation(
                     tier=tier,
                     reason_short=reason_short,
                     reviewer_summaries=reviewer_summaries,
+                    expected_reviewers=tier_cfg.reviewers if tier_cfg else (),
                     approve_url=approve_url,
                     approve_merge_url=approve_merge_url,
                     investigate_url=investigate_url,
