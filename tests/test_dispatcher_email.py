@@ -241,13 +241,16 @@ def test_budget_card_sums_breakdown_when_no_total(tmp_path):
     assert "$15.68" in card["header"]["subtitle"]
 
 
-def test_non_budget_escalation_keeps_approve_buttons(tmp_path):
-    # Regression: a NON-budget escalation with an approve web app still offers
-    # Approve / Approve & Merge — the trigger branch didn't affect other types.
+def test_non_budget_escalation_offers_all_one_tap_actions(tmp_path):
+    # A NON-budget escalation (e.g. a head-lock sign-off) with the approve web app
+    # AND signing secret offers the full one-tap set: Approve / Approve & Merge /
+    # Send back / Block — so the operator can send it back for another round
+    # without opening the PR (the head-lock card was missing Send back before).
     cfg = _cfg({
         "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
         "GITHUB_REPOSITORY": "NFS-247/StockTrader",
         "APPROVE_WEBAPP_URL": "https://script.google.com/macros/s/AB/exec",
+        "APPROVE_SIGNING_SECRET": "sec",
     }, tmp_path)
     sent = {}
     with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
@@ -262,6 +265,30 @@ def test_non_budget_escalation_keeps_approve_buttons(tmp_path):
     section = sent["card"]["cardsV2"][0]["card"]["sections"][0]
     texts = [b["text"] for b in section["widgets"][1]["buttonList"]["buttons"]]
     assert "✅ Approve" in texts and "🚀 Approve & Merge" in texts
+    assert "🔄 Send back (1 more round)" in texts            # the fix
+    assert "✋ Block" in texts
+
+
+def test_generic_escalation_card_gates_one_tap_on_signing_secret(tmp_path):
+    # Web app set but NO signing secret -> no one-tap buttons at all (an unsigned
+    # link is rejected by the Apps Script); only Open PR, with typed-command prose.
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/StockTrader",
+        "APPROVE_WEBAPP_URL": "https://script.google.com/macros/s/AB/exec",
+    }, tmp_path)  # no APPROVE_SIGNING_SECRET
+    sent = {}
+    with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
+        main._send_escalation(
+            cfg=cfg, api=_FakeAPI(), pr_number=9, pr_url="http://x/9", pr_title="T",
+            tier="high_stakes", branch="f/x", head_sha="abc1234",
+            reason_short="high-stakes file changed; operator review required", detail="d",
+            reviewer_summaries={"claude": "approve"}, ci_status=CIStatus.SUCCESS,
+            diff_summary="+1-0", workflow_run_url="http://run",
+        )
+    section = sent["card"]["cardsV2"][0]["card"]["sections"][0]
+    texts = [b["text"] for b in section["widgets"][1]["buttonList"]["buttons"]]
+    assert texts == ["Open PR #9"]   # no unsigned one-tap buttons
 
 
 def test_budget_email_omits_operator_approve():

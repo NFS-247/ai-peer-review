@@ -422,6 +422,29 @@ def _send_escalation(
                     block_url=block_url,
                 )
             else:
+                # Generic escalation (head-lock sign-off, suspicious-unanimous,
+                # infra). Offer one-tap actions ONLY when they can be HMAC-signed
+                # (both the web app AND the signing secret set) — an unsigned link
+                # is rejected by the Apps Script, so a half-configured repo gets
+                # Open PR + typed commands rather than buttons that fail.
+                approve_url = approve_merge_url = investigate_url = block_url = ""
+                if cfg.approve_webapp_url and cfg.approve_signing_secret:
+                    approve_url = build_approve_url(
+                        cfg.approve_webapp_url, repo=cfg.repo_name,
+                        pr_number=pr_number, action="approve",
+                        signing_secret=cfg.approve_signing_secret)
+                    approve_merge_url = build_approve_url(
+                        cfg.approve_webapp_url, repo=cfg.repo_name,
+                        pr_number=pr_number, action="approve_merge",
+                        signing_secret=cfg.approve_signing_secret)
+                    investigate_url = build_approve_url(
+                        cfg.approve_webapp_url, repo=cfg.repo_name,
+                        pr_number=pr_number, action="investigate",
+                        signing_secret=cfg.approve_signing_secret)
+                    block_url = build_approve_url(
+                        cfg.approve_webapp_url, repo=cfg.repo_name,
+                        pr_number=pr_number, action="block",
+                        signing_secret=cfg.approve_signing_secret)
                 card = build_escalation_card(
                     project_name=cfg.project_name,
                     pr_number=pr_number,
@@ -430,20 +453,10 @@ def _send_escalation(
                     tier=tier,
                     reason_short=reason_short,
                     reviewer_summaries=reviewer_summaries,
-                    approve_url=build_approve_url(
-                        cfg.approve_webapp_url or "",
-                        repo=cfg.repo_name,
-                        pr_number=pr_number,
-                        action="approve",
-                        signing_secret=cfg.approve_signing_secret or "",
-                    ),
-                    approve_merge_url=build_approve_url(
-                        cfg.approve_webapp_url or "",
-                        repo=cfg.repo_name,
-                        pr_number=pr_number,
-                        action="approve_merge",
-                        signing_secret=cfg.approve_signing_secret or "",
-                    ),
+                    approve_url=approve_url,
+                    approve_merge_url=approve_merge_url,
+                    investigate_url=investigate_url,
+                    block_url=block_url,
                     spend_breakdown=spend_breakdown,
                     trigger=trigger.value if trigger else "",
                     unavailable_reviewers=unavailable_reviewers,

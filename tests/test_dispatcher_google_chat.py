@@ -568,3 +568,37 @@ def test_disagreement_card_contested_stays_split_no_merge():
     assert "Reviewers couldn't agree" in text and "✋ want changes: claude" in text
     texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
     assert "🚀 Approve & Merge" not in texts             # never one-tap-merge a contested PR
+
+
+def test_escalation_card_send_back_block_buttons():
+    # A head-lock / gut-check escalation with signed investigate+block links gets
+    # one-tap "Send back" and "Block" buttons, so the operator never has to open
+    # the PR to type a command.
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=107, pr_url="http://x/107", pr_title="T",
+        tier="high_stakes", reason_short="r", reviewer_summaries={"claude": "approve"},
+        approve_url="http://a", investigate_url="http://i", block_url="http://b",
+    )
+    sec = card["cardsV2"][0]["card"]["sections"][0]
+    texts = [btn["text"] for btn in sec["widgets"][1]["buttonList"]["buttons"]]
+    assert "🔄 Send back (1 more round)" in texts
+    assert "✋ Block" in texts
+    body = sec["widgets"][0]["textParagraph"]["text"]
+    # both actions are buttons now, so the body shouldn't tell you to open the PR
+    assert "Tap a button below." in body
+    assert "open the PR for" not in body
+
+
+def test_escalation_card_points_at_pr_for_missing_button_actions():
+    # Approve only (no investigate/block links) -> the body still points at the PR
+    # for the actions that aren't buttons.
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=9, pr_url="http://x/9", pr_title="T",
+        tier="high_stakes", reason_short="r", reviewer_summaries={},
+        approve_url="http://a",
+    )
+    sec = card["cardsV2"][0]["card"]["sections"][0]
+    texts = [btn["text"] for btn in sec["widgets"][1]["buttonList"]["buttons"]]
+    assert "🔄 Send back (1 more round)" not in texts
+    body = sec["widgets"][0]["textParagraph"]["text"]
+    assert "INVESTIGATE" in body and "BLOCK" in body
