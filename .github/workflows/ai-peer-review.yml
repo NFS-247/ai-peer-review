@@ -1,5 +1,5 @@
 # Self-review: the dispatcher engine reviews its OWN pull requests with all
-# three brains (Claude/GPT/Gemini), pinned to the published @v2 ref so a stable
+# three brains (Claude/GPT/Gemini), pinned to the published @v3 ref so a stable
 # engine reviews proposed changes to the engine. Config: ../.peer-review.json.
 #
 # Requires these repo/org secrets to be set on THIS repo: ANTHROPIC_API_KEY,
@@ -47,7 +47,7 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
 
       - name: Run AI peer review
-        uses: NFS-247/ai-peer-review@v2
+        uses: NFS-247/ai-peer-review@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

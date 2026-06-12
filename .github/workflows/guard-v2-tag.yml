@@ -1,14 +1,14 @@
-# Fails if a tag named exactly "v2" exists. A v2 TAG can shadow the v2 BRANCH
-# that every consumer runs via `uses: NFS-247/ai-peer-review@v2` — GitHub Actions
-# ref resolution is ambiguous when a tag and a branch share a name, so a stray v2
+# Fails if a tag named exactly "v2" or "v3" exists. A vN TAG can shadow the vN
+# BRANCH that consumers run via `uses: NFS-247/ai-peer-review@vN` — GitHub Actions
+# ref resolution is ambiguous when a tag and a branch share a name, so a stray
 # tag could silently change how every consumer is reviewed. This turns the
-# README's "never create a v2 tag" rule into an enforced check. To remove an
-# offending tag:  git push origin :refs/tags/v2
-name: Guard against a v2 tag
+# README's "never create a vN tag" rule into an enforced check. To remove an
+# offending tag:  git push origin :refs/tags/v2  (or :refs/tags/v3)
+name: Guard against v2/v3 tags
 
 on:
   push:
-    tags: ["**"]            # any tag push — catches a v2 tag the moment it lands
+    tags: ["**"]            # any tag push — catches an offending tag the moment it lands
   schedule:
     - cron: "17 8 * * *"    # daily safety net in case a tag is created off-CI
   workflow_dispatch:
@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 jobs:
-  no-v2-tag:
+  no-release-branch-tags:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (with tags)
@@ -25,10 +25,14 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-      - name: Fail if a 'v2' tag exists
+      - name: Fail if a 'v2' or 'v3' tag exists
         run: |
-          if git tag -l | grep -qx 'v2'; then
-            echo "::error::A 'v2' TAG exists and can shadow the v2 BRANCH every consumer runs (uses: NFS-247/ai-peer-review@v2). Remove it:  git push origin :refs/tags/v2"
-            exit 1
-          fi
-          echo "OK — no 'v2' tag; @v2 resolves to the branch."
+          bad=0
+          for ref in v2 v3; do
+            if git tag -l | grep -qx "$ref"; then
+              echo "::error::A '$ref' TAG exists and can shadow the $ref BRANCH consumers run (uses: NFS-247/ai-peer-review@$ref). Remove it:  git push origin :refs/tags/$ref"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
+          echo "OK — no v2/v3 tags; @v2 and @v3 resolve to the branches."
