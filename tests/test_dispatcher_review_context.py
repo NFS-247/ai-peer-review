@@ -35,7 +35,7 @@ def _review_comment(
 
 # ---- summarize_prior_reviews -----------------------------------------------
 
-def test_prior_reviews_keeps_latest_per_reviewer_and_strips_verdict():
+def test_prior_reviews_returns_full_history_in_order():
     secret = "sek"
     bodies = [
         _review_comment("claude", 1, "request_changes", "first pass: rate-limit it", secret),
@@ -43,18 +43,29 @@ def test_prior_reviews_keeps_latest_per_reviewer_and_strips_verdict():
         _review_comment("claude", 2, "approve", "second pass: fixed, approving now", secret),
     ]
     out = summarize_prior_reviews(bodies, secret=secret)
-    # one block per reviewer, claude's LATEST (round 2) wins, gpt's only one
-    assert len(out) == 2
+    # EVERY round of every reviewer is kept — full conversation, not just latest
+    assert len(out) == 3
     joined = "\n".join(out)
-    assert "second pass: fixed, approving now" in joined
-    assert "first pass: rate-limit it" not in joined      # superseded
+    assert "first pass: rate-limit it" in joined          # earlier round NOT dropped
     assert "looks fine to me" in joined
+    assert "second pass: fixed, approving now" in joined
+    # chronological, oldest -> newest
+    assert joined.index("first pass") < joined.index("looks fine") < joined.index("second pass")
     # the internal signed verdict block is never shown to the model
     assert "tradewatcher-verdict" not in joined
     assert "signature:" not in joined
-    # reviewer-sorted, deterministic
-    assert out[0].startswith("**Review from `claude`")
-    assert out[1].startswith("**Review from `gpt`")
+
+
+def test_prior_reviews_total_cap_drops_oldest_keeps_recent():
+    secret = "sek"
+    bodies = [
+        _review_comment("claude", 1, "request_changes", "OLDEST " + "a" * 400, secret),
+        _review_comment("gpt", 2, "approve", "NEWEST " + "b" * 400, secret),
+    ]
+    out = summarize_prior_reviews(bodies, secret=secret, max_total_chars=500)
+    joined = "\n".join(out)
+    assert "NEWEST" in joined          # most recent always survives
+    assert "OLDEST" not in joined      # oldest trimmed to fit the budget
 
 
 def test_prior_reviews_require_valid_signature():
@@ -137,5 +148,8 @@ def test_prompt_omits_sections_when_no_memory():
 
 def test_calibration_guidance_in_common_instructions():
     instr = build_common_instructions()
+    # objective-first framing: understand the goal before nitpicking
+    assert "what this change is trying to accomplish" in instr
+    assert "against THAT goal" in instr
     assert "Calibrate your concerns" in instr
     assert "operator owns that judgment" in instr

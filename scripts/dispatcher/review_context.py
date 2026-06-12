@@ -34,6 +34,12 @@ _DECISION_VERBS = frozenset({"APPROVE", "INVESTIGATE", "DISCUSS", "BLOCK"})
 # the prompt (and the token bill). Reviews are normally 1-3 short paragraphs.
 _MAX_BLOCK_CHARS = 2000
 
+# Total budget for the prior-review history fed back each round. The panel sees
+# its WHOLE conversation by default; only a pathologically long PR trims it, and
+# then the OLDEST rounds drop first so the most recent context always survives.
+# This bounds per-call tokens to ~linear regardless of round count.
+_MAX_TOTAL_CHARS = 40000
+
 
 def _strip_verdict_block(body: str) -> str:
     """Drop the trailing signed verdict fence — internal plumbing, not for the model."""
@@ -42,29 +48,42 @@ def _strip_verdict_block(body: str) -> str:
 
 
 def summarize_prior_reviews(
-    comment_bodies: Iterable[str], *, secret: str, max_block_chars: int = _MAX_BLOCK_CHARS
+    comment_bodies: Iterable[str],
+    *,
+    secret: str,
+    max_block_chars: int = _MAX_BLOCK_CHARS,
+    max_total_chars: int = _MAX_TOTAL_CHARS,
 ) -> list[str]:
-    """Each reviewer's MOST RECENT signed review, verdict fence stripped, reviewer-sorted.
+    """The PR's FULL signed-review history, oldest->newest, verdict fence stripped.
 
-    ``comment_bodies`` is the PR's comment bodies in order (oldest->newest). A body
-    is trusted only if it parses as a validly-signed dispatcher verdict (so this
-    is exactly what convergence trusts). For each reviewer the latest round wins,
-    so the panel sees at most one block per reviewer — bounded context, highest
-    signal: their current standing position and concerns. Returns ``[]`` when the
-    secret is empty (fail-closed, same as convergence).
+    ``comment_bodies`` is the PR's comment bodies in order (oldest->newest). A
+    body counts only if it parses as a validly-signed dispatcher verdict (exactly
+    what convergence trusts), so a PR author can't inject fake memory and it works
+    no matter which bot login posted it. Every round of every reviewer is kept —
+    each block self-identifies ("Review from `claude` ... round: 2"), so the panel
+    sees the whole conversation, not just the latest take. Each block is
+    length-capped; if the running total would exceed ``max_total_chars`` the
+    OLDEST blocks drop first so the most recent rounds always survive. Returns
+    ``[]`` when the secret is empty (fail-closed, same as convergence).
     """
     if not secret:
         return []
-    latest: dict[str, tuple[int, str]] = {}
+    blocks: list[str] = []
     for body in comment_bodies:
         verdict = parse_signed_verdict_from_comment(body or "", secret)
         if verdict is None:
             continue
-        prev = latest.get(verdict.reviewer)
-        if prev is None or verdict.round >= prev[0]:
-            text = _strip_verdict_block(body).strip()[:max_block_chars]
-            latest[verdict.reviewer] = (verdict.round, text)
-    return [latest[r][1] for r in sorted(latest)]
+        blocks.append(_strip_verdict_block(body).strip()[:max_block_chars])
+    # Keep the most recent within the total budget, then restore chronological order.
+    kept: list[str] = []
+    total = 0
+    for block in reversed(blocks):
+        if kept and total + len(block) > max_total_chars:
+            break
+        kept.append(block)
+        total += len(block)
+    kept.reverse()
+    return kept
 
 
 def summarize_operator_decisions(

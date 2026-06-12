@@ -21,6 +21,11 @@ from typing import Sequence
 _BASE_INSTRUCTIONS_HEAD = dedent("""
     You are reviewing a pull request.{project_line}
 
+    Start by understanding what this change is trying to accomplish: read the PR
+    description and the project context, and review the change against THAT goal.
+    A change that correctly achieves its stated objective should not be blocked
+    for failing to do things it never set out to do.
+
     Your job is adversarial review: find things that are wrong, missing,
     or risky. Do not be polite. Do not approve to be helpful. Approve only
     when you have actually verified the change is safe and correct.
