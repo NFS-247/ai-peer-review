@@ -390,11 +390,15 @@ def _send_escalation(
                 # Only offer one-tap Approve when it can be HMAC-signed; skip the
                 # builder entirely unless BOTH the web app and the signing secret
                 # are set, so no unsigned or partial link is ever produced.
-                approve_url = investigate_url = block_url = ""
+                approve_url = approve_merge_url = investigate_url = block_url = ""
                 if cfg.approve_webapp_url and cfg.approve_signing_secret:
                     approve_url = build_approve_url(
                         cfg.approve_webapp_url, repo=cfg.repo_name,
                         pr_number=pr_number, action="approve",
+                        signing_secret=cfg.approve_signing_secret)
+                    approve_merge_url = build_approve_url(
+                        cfg.approve_webapp_url, repo=cfg.repo_name,
+                        pr_number=pr_number, action="approve_merge",
                         signing_secret=cfg.approve_signing_secret)
                     investigate_url = build_approve_url(
                         cfg.approve_webapp_url, repo=cfg.repo_name,
@@ -404,6 +408,10 @@ def _send_escalation(
                         cfg.approve_webapp_url, repo=cfg.repo_name,
                         pr_number=pr_number, action="block",
                         signing_secret=cfg.approve_signing_secret)
+                # The tier's required panel: lets the card spot a reviewer that
+                # never reported at all (absent from the summaries), so it can't
+                # claim "all approved" — or offer one-tap merge — around a hole.
+                tier_cfg = cfg.tiers.get(tier)
                 card = build_disagreement_card(
                     project_name=cfg.project_name,
                     pr_number=pr_number,
@@ -412,7 +420,9 @@ def _send_escalation(
                     tier=tier,
                     reason_short=reason_short,
                     reviewer_summaries=reviewer_summaries,
+                    expected_reviewers=tier_cfg.reviewers if tier_cfg else (),
                     approve_url=approve_url,
+                    approve_merge_url=approve_merge_url,
                     investigate_url=investigate_url,
                     block_url=block_url,
                 )

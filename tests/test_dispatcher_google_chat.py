@@ -532,6 +532,44 @@ def test_plain_escalation_lead_known_and_unknown():
     assert gc.plain_escalation_lead("") == gc.plain_escalation_lead("nope")
 
 
+def test_disagreement_card_all_approved_not_split_offers_merge():
+    # Everyone approved but it didn't auto-converge (hard round cap with CI pending
+    # / head moved): the card must NOT say "split", and it SHOULD offer merge.
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=111, pr_url="http://x/111", pr_title="T",
+        tier="high_stakes", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "approve (round 6)", "gpt": "approve (round 6)",
+                            "gemini": "approve (round 6)"},
+        approve_url="http://a", approve_merge_url="http://m",
+        investigate_url="http://i", block_url="http://b",
+    )
+    c = card["cardsV2"][0]["card"]
+    assert "reviewers split" not in c["header"]["title"]
+    assert "approved — needs you" in c["header"]["title"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "All reviewers approved" in text and "couldn't agree" not in text
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" in texts                 # the fix
+    assert "✅ Approve & mark ready" in texts
+
+
+def test_disagreement_card_contested_stays_split_no_merge():
+    # Genuine dissent: keep the "split" framing and WITHHOLD one-tap merge, even
+    # when an approve_merge link is available.
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=9, pr_url="http://x/9", pr_title="T",
+        tier="backend", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "request_changes (round 6)", "gpt": "approve (round 6)"},
+        approve_url="http://a", approve_merge_url="http://m",
+    )
+    c = card["cardsV2"][0]["card"]
+    assert "reviewers split" in c["header"]["title"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "Reviewers couldn't agree" in text and "✋ want changes: claude" in text
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" not in texts             # never one-tap-merge a contested PR
+
+
 def test_escalation_card_send_back_block_buttons():
     # A head-lock / gut-check escalation with signed investigate+block links gets
     # one-tap "Send back" and "Block" buttons, so the operator never has to open
@@ -564,3 +602,81 @@ def test_escalation_card_points_at_pr_for_missing_button_actions():
     assert "🔄 Send back (1 more round)" not in texts
     body = sec["widgets"][0]["textParagraph"]["text"]
     assert "INVESTIGATE" in body and "BLOCK" in body
+
+
+def test_disagreement_card_error_reviewer_not_all_approved_no_merge():
+    # gpt's #18 concern: no dissent ≠ all approved. A reviewer that errored (or
+    # returned no clear verdict) means the panel has a hole — the card must NOT
+    # claim unanimity and must NOT offer one-tap merge.
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=111, pr_url="http://x/111", pr_title="T",
+        tier="high_stakes", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "approve (round 6)", "gemini": "approve (round 6)",
+                            "gpt": "API failure this round"},
+        approve_url="http://a", approve_merge_url="http://m",
+        investigate_url="http://i", block_url="http://b",
+    )
+    c = card["cardsV2"][0]["card"]
+    assert "reviews incomplete — needs you" in c["header"]["title"]
+    assert "reviewers split" not in c["header"]["title"]   # nobody dissented
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "All reviewers approved" not in text
+    assert "❔ no clear verdict: gpt" in text
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" not in texts               # incomplete panel: no one-tap merge
+    assert "✅ Approve & mark ready" in texts              # explicit override stays available
+
+
+def test_disagreement_card_missing_expected_reviewer_no_merge():
+    # A reviewer that never reported at all is invisible in the summaries — the
+    # expected panel makes the hole visible: bucketed "no clear verdict", no
+    # unanimity claim, no one-tap merge.
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=111, pr_url="http://x/111", pr_title="T",
+        tier="high_stakes", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "approve (round 6)", "gemini": "approve (round 6)"},
+        expected_reviewers=("claude", "gpt", "gemini"),
+        approve_url="http://a", approve_merge_url="http://m",
+    )
+    c = card["cardsV2"][0]["card"]
+    assert "reviews incomplete — needs you" in c["header"]["title"]
+    text = c["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "All reviewers approved" not in text
+    assert "❔ no clear verdict: gpt" in text
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" not in texts
+
+
+def test_disagreement_card_full_expected_panel_still_offers_merge():
+    # The expected-panel seeding must not break the true all-approved case.
+    card = gc.build_disagreement_card(
+        project_name="P", pr_number=111, pr_url="http://x/111", pr_title="T",
+        tier="high_stakes", reason_short="hard round cap reached",
+        reviewer_summaries={"claude": "approve (round 6)", "gpt": "approve (round 6)",
+                            "gemini": "approve (round 6)"},
+        expected_reviewers=("claude", "gpt", "gemini"),
+        approve_url="http://a", approve_merge_url="http://m",
+    )
+    c = card["cardsV2"][0]["card"]
+    assert "approved — needs you" in c["header"]["title"]
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" in texts
+
+
+def test_disagreement_card_fallback_prose_override_only_when_contested():
+    # No webapp links -> typed-command prose. Approving over a dissent is an
+    # override and must SAY so; with no dissent there's nothing to override.
+    contested = gc.build_disagreement_card(
+        project_name="P", pr_number=9, pr_url="http://x/9", pr_title="T",
+        tier="backend", reason_short="r",
+        reviewer_summaries={"claude": "request_changes (round 2)", "gpt": "approve (round 2)"},
+    )
+    text = contested["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "override" in text and "read the concerns" in text
+    uncontested = gc.build_disagreement_card(
+        project_name="P", pr_number=9, pr_url="http://x/9", pr_title="T",
+        tier="backend", reason_short="r",
+        reviewer_summaries={"claude": "approve (round 2)", "gpt": "approve (round 2)"},
+    )
+    text = uncontested["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
+    assert "override" not in text

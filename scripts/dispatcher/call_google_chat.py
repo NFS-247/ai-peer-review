@@ -18,7 +18,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Mapping
+from typing import Mapping, Sequence
 
 
 def _esc(text: str) -> str:
@@ -446,27 +446,44 @@ def build_disagreement_card(
     tier: str,
     reason_short: str,
     reviewer_summaries: Mapping[str, str],
+    expected_reviewers: Sequence[str] = (),
     approve_url: str = "",
+    approve_merge_url: str = "",
     investigate_url: str = "",
     block_url: str = "",
 ) -> dict:
-    """Card for a reviewers-couldn't-converge escalation (a deadlock).
+    """Card for a reviewers-ran-but-didn't-auto-converge escalation.
 
-    The PR HAS been reviewed but the panel didn't agree (hard round cap, dissent
-    past the round budget, or per-PR cost without converging). Unlike a budget
-    stop, this IS an approval moment — so the card shows WHO is split and offers
-    the tie-breaker: Approve & mark ready (override the holdouts), or Open PR to
-    read the concerns and reply OPERATOR INVESTIGATE/BLOCK. Approve is a legitimate
-    override here precisely because the reviewers ran. When ``investigate_url`` /
-    ``block_url`` are set (signed approve-webapp links), those become one-tap
-    buttons too — Send back (another round) and Block — so no command typing.
+    Three shapes, chosen by what the panel actually said:
+    - CONTESTED (someone requested changes): the panel is split. Show WHO is split
+      and offer the tie-breaker — Approve & mark ready (override), Send back, or
+      Block. NO one-tap merge — never one-tap-merge a contested PR.
+    - ALL APPROVED (every reviewer affirmatively approved, but it didn't converge —
+      CI still running, the head moved right after they approved, or it hit the
+      round cap): say exactly that — NOT "reviewers split" — and DO offer
+      Approve & Merge, since there's nothing to override. GitHub branch protection
+      is the backstop if CI isn't green yet.
+    - INCOMPLETE (nobody dissented, but a reviewer errored, gave no clear verdict,
+      or never reported): "all approved" would be a lie and one-tap merge unsafe —
+      say who's missing and withhold the merge button.
+
+    ``expected_reviewers`` is the tier's required panel: anyone on it with no entry
+    in ``reviewer_summaries`` is bucketed as "no clear verdict", because the
+    summaries alone can't reveal a reviewer that never reported at all.
+
+    ``approve_merge_url`` / ``investigate_url`` / ``block_url`` (signed approve-webapp
+    links) become one-tap buttons when set; otherwise the card falls back to the
+    typed-OPERATOR-command prose.
     """
+    summaries = dict(reviewer_summaries)
+    for name in expected_reviewers:
+        summaries.setdefault(name, "no verdict")
     # Bucket reviewers by verdict. A reviewer that errored / only commented / has
     # no verdict must NOT be shown as "want changes" — on a human-override card,
     # mislabeling who's blocking drives the wrong decision. Sort each bucket so the
     # output never depends on the caller's mapping order.
     buckets: dict[str, list[str]] = {"approve": [], "block": [], "other": []}
-    for name, verdict in reviewer_summaries.items():
+    for name, verdict in summaries.items():
         # Summaries arrive as "<verdict> (round N)" — match the leading verdict
         # TOKEN exactly. Substring matching would mis-bucket ("disapprove" contains
         # "approve"); full-string equality would miss the "(round N)" suffix.
@@ -477,6 +494,13 @@ def build_disagreement_card(
             buckets["block"].append(name)
         else:
             buckets["other"].append(name)
+    contested = bool(buckets["block"])  # at least one reviewer wants changes
+    # "All approved" must mean exactly that: at least one approval, no dissent,
+    # AND nobody in the errored/no-verdict/missing bucket. A panel with a hole in
+    # it is not unanimous — claiming so (or offering one-tap merge on it) would
+    # ship a change a required reviewer never actually passed.
+    all_approved = bool(buckets["approve"]) and not buckets["block"] and not buckets["other"]
+
     parts = []
     if buckets["approve"]:
         parts.append(f"✅ approve: {_esc(', '.join(sorted(buckets['approve'])))}")
@@ -484,24 +508,50 @@ def build_disagreement_card(
         parts.append(f"✋ want changes: {_esc(', '.join(sorted(buckets['block'])))}")
     if buckets["other"]:
         parts.append(f"❔ no clear verdict: {_esc(', '.join(sorted(buckets['other'])))}")
-    # The blank-line separator lives inside split_html, so there's no stray break
-    # when there are no parts.
+    # The blank-line separator lives inside split_html, so there's no stray break.
     split_html = f"{'  ·  '.join(parts)}<br><br>" if parts else ""
+
+    if contested:
+        lead = f"<b>Reviewers couldn't agree</b> — {_esc(reason_short)}.<br>"
+    elif all_approved:
+        # Everyone approved, yet it didn't auto-converge — CI is still running, a
+        # new commit landed right after they approved, or it hit the round cap.
+        # Do NOT call this "split"; it isn't.
+        lead = (
+            "<b>All reviewers approved</b>, but it couldn't finish on its own "
+            f"({_esc(reason_short)}) — usually CI still running, or the code "
+            "changed right after they approved. Check the PR, then merge.<br>"
+        )
+    else:
+        # No dissent, but no full set of approvals either — a reviewer errored,
+        # returned no clear verdict, or never reported. NOT unanimity.
+        lead = (
+            "<b>Nobody requested changes, but not every reviewer returned a "
+            f"verdict</b> ({_esc(reason_short)}) — check the PR yourself before "
+            "deciding.<br>"
+        )
 
     # One-tap buttons replace the typed OPERATOR commands when the approve-webapp
     # is configured; otherwise fall back to the command prose.
-    if approve_url or investigate_url or block_url:
-        instructions = ("Tap a button below, or open the PR to read the concerns "
-                        "first.")
-    else:
+    if approve_url or approve_merge_url or investigate_url or block_url:
+        tail = "read the concerns first." if contested else "check it first."
+        instructions = f"Tap a button below, or open the PR to {tail}"
+    elif contested:
+        # Approving over a dissent is an OVERRIDE — say so, and point at the
+        # concerns, so a tie-break is never cast as routine.
         instructions = (
             "Your call: <b>Approve</b> to override and mark ready, or open the PR "
             "to read the concerns and reply <b>OPERATOR INVESTIGATE &lt;note&gt;</b> "
             "(send back) or <b>OPERATOR BLOCK</b>."
         )
+    else:
+        instructions = (
+            "Your call: <b>Approve</b> to mark ready, or open the PR and reply "
+            "<b>OPERATOR INVESTIGATE &lt;note&gt;</b> (send back) or <b>OPERATOR BLOCK</b>."
+        )
     body = (
         f"<b>{_esc(pr_title)}</b><br>"
-        f"<b>Reviewers couldn't agree</b> — {_esc(reason_short)}.<br>"
+        f"{lead}"
         f"{split_html}"
         f"{instructions}"
     )
@@ -510,6 +560,12 @@ def build_disagreement_card(
     if approve_url:
         buttons.append(
             {"text": "✅ Approve & mark ready", "onClick": {"openLink": {"url": approve_url}}}
+        )
+    # One-tap merge ONLY when every reviewer affirmatively approved — never on a
+    # contested panel, and never on one with an errored/no-verdict/missing seat.
+    if approve_merge_url and all_approved:
+        buttons.append(
+            {"text": "🚀 Approve & Merge", "onClick": {"openLink": {"url": approve_merge_url}}}
         )
     if investigate_url:
         buttons.append(
@@ -524,13 +580,19 @@ def build_disagreement_card(
         {"text": f"Open PR #{pr_number}", "onClick": {"openLink": {"url": pr_url}}}
     )
 
+    if contested:
+        title_tail = "reviewers split"
+    elif all_approved:
+        title_tail = "approved — needs you"
+    else:
+        title_tail = "reviews incomplete — needs you"
     return {
         "cardsV2": [
             {
                 "cardId": f"disagreement-pr-{pr_number}",
                 "card": {
                     "header": {
-                        "title": f"{_esc(project_name)}: PR #{pr_number} — reviewers split",
+                        "title": f"{_esc(project_name)}: PR #{pr_number} — {title_tail}",
                         "subtitle": f"tier: {_esc(tier)} · {_esc(reason_short)}",
                     },
                     "sections": [
