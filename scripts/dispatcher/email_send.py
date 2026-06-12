@@ -13,6 +13,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Optional
 
+from .call_google_chat import known_plain_lead
+
 
 RESEND_API_URL = "https://api.resend.com/emails"
 DEFAULT_FROM = "AI Peer Review <onboarding@resend.dev>"
@@ -75,6 +77,7 @@ def build_escalation_email(
     diff_summary: str,
     workflow_run_url: str,
     is_budget_stop: bool = False,
+    trigger: str = "",
 ) -> EmailMessage:
     """Build the escalation email per Section 6 of the design doc.
 
@@ -83,6 +86,12 @@ def build_escalation_email(
     ready. The operator is pointed at raising the ceiling instead. This keeps the
     email + durable PR-comment consistent with the Chat budget card (no approve
     path on a money stop), across every channel.
+
+    ``trigger`` (optional, the EscalationTrigger value as a string) leads the
+    "Why" section with a plain-language sentence — the same human copy the Chat
+    cards use — when we have one for that trigger, keeping the engine's literal
+    detail underneath as the specifics. Unknown/blank triggers fall back to the
+    literal detail alone, so diagnostics are never masked (back-compatible).
     """
 
     subject = f"[{project_name}] PR #{pr_number} — {reason_short}"
@@ -104,25 +113,29 @@ def build_escalation_email(
             "unreviewed PR ready to merge."
         )
     else:
+        # The 3 actions you'll actually use, in plain language. The rarely-needed
+        # ones collapse to a single line instead of the old wall of sub-bullets.
         your_call = (
             "== Your call ==\n"
-            "Reply on the PR with one of (matches Section 7 of the design doc):\n"
-            "  OPERATOR APPROVE\n"
-            "      add approving review; mark ready for operator merge;\n"
-            "      dispatcher does NOT merge. You merge manually on GitHub.\n"
-            "  OPERATOR BLOCK <reason>\n"
-            "      add changes-requested review with reason; pause dispatcher loop\n"
-            "  OPERATOR INVESTIGATE <note>\n"
-            "      send PR back to reviewers for another round with note as context\n"
-            "  OPERATOR DISCUSS <your text>\n"
-            "      post your text as a PR comment, triggers a new review round\n"
-            "  OPERATOR PAUSE\n"
-            "      dispatcher stops touching this PR until OPERATOR RESUME\n"
-            "  OPERATOR RESUME\n"
-            "      re-enable dispatcher on a paused PR\n"
-            "  OPERATOR KILL\n"
-            "      close PR only. Branch is NOT deleted (no contents:write)."
+            "Reply on the PR with one of:\n"
+            "  • OPERATOR APPROVE — approve it and mark it ready (you merge it on "
+            "GitHub; the dispatcher never merges).\n"
+            "  • OPERATOR INVESTIGATE <note> — send it back for another review "
+            "round, with your note as context.\n"
+            "  • OPERATOR BLOCK <reason> — stop the PR, with a reason.\n"
+            "Rarely needed: OPERATOR DISCUSS / PAUSE / RESUME / KILL "
+            "(see the dispatcher README)."
         )
+
+    # Plain-language first line when we have copy for this trigger; keep the
+    # engine's specifics underneath (round counts, who dissented) when they add
+    # information. No trigger / unknown trigger -> literal detail alone.
+    plain = known_plain_lead(trigger)
+    specifics = detail or reason_short
+    if plain:
+        why_block = f"{plain}\n{specifics}" if specifics and specifics != plain else plain
+    else:
+        why_block = specifics
 
     text = f"""\
 PR:      {pr_url}
@@ -131,7 +144,7 @@ Tier:    {tier}
 Branch:  {branch}
 
 == Why this needs you ==
-{detail or reason_short}
+{why_block}
 
 == Reviewer summary ==
 {reviewer_lines}
