@@ -32,6 +32,18 @@ _BASE_INSTRUCTIONS_HEAD = dedent("""
     - Stale tests against deleted helpers; tests that don't exercise the change
     - Duplicate or dead code
     - PRs that bundle unrelated work (one objective per PR)
+
+    Calibrate your concerns to THIS project and THIS change:
+    - Prefer the project's stated conventions and the operator's standing
+      decisions (shown below, if any) over generic best practices. A practice
+      that is good "in general" can be the wrong call for this repo — the
+      operator owns that judgment, not you.
+    - Raise a concern only when it is a concrete defect in this diff, not a
+      general "you could also add X." If you mention such a suggestion at all,
+      keep it out of "concerns" unless it's an actual problem here.
+    - If you reviewed an earlier round, do NOT re-raise a concern the new diff
+      already resolved, or one the operator has explicitly overruled. Read the
+      prior review history below before repeating yourself.
 """).strip()
 
 _SCHEMA_TAIL = dedent("""
@@ -97,6 +109,7 @@ def build_review_prompt(
     round_: int,
     prior_review_history: Sequence[str] = (),
     operator_note: str = "",
+    operator_decisions: Sequence[str] = (),
     project_description: str = "",
     review_guidance: Sequence[str] = (),
 ) -> str:
@@ -105,14 +118,31 @@ def build_review_prompt(
     ``operator_note`` carries the text from an OPERATOR INVESTIGATE/DISCUSS
     command. When present it is surfaced prominently so reviewers focus on the
     operator's specific instruction for this round (design Section 7).
-    ``project_description`` / ``review_guidance`` inject the consuming repo's
-    domain context (from its .peer-review.json) so reviews are tailored per
-    tenant instead of hard-coded to one project.
+    ``prior_review_history`` is the panel's earlier reviews on this PR (one
+    block per reviewer, their latest) so a reviewer has memory across rounds and
+    stops re-raising resolved concerns. ``operator_decisions`` are the owner's
+    STANDING rulings on this PR (OPERATOR APPROVE/INVESTIGATE/...): reviewers
+    honor them and do not relitigate. ``project_description`` / ``review_guidance``
+    inject the consuming repo's domain context (from its .peer-review.json) so
+    reviews are tailored per tenant instead of hard-coded to one project.
     """
     common = build_common_instructions(
         project_description=project_description,
         review_guidance=review_guidance,
     )
+
+    decisions_section = ""
+    if operator_decisions:
+        decisions = "\n\n".join(d.strip() for d in operator_decisions if d.strip())
+        if decisions:
+            decisions_section = dedent(f"""
+                Standing operator decisions on this PR (the OWNER has ruled —
+                honor these and do NOT relitigate them):
+
+                {decisions}
+
+                ---
+            """).strip() + "\n\n"
 
     history_section = ""
     if prior_review_history:
@@ -155,7 +185,7 @@ def build_review_prompt(
 
         ---
 
-        {history_section}Diff to review:
+        {decisions_section}{history_section}Diff to review:
 
         {diff_text}
 

@@ -27,6 +27,7 @@ from typing import Optional
 
 from .ai_client import AIClient
 from .ai_prompt import build_review_prompt
+from .review_context import summarize_operator_decisions, summarize_prior_reviews
 from .call_claude import ClaudeClient
 from .call_gemini import GeminiClient
 from .call_gpt import GPTClient
@@ -953,6 +954,20 @@ def _run_review_round(
     )
     round_ = label_state.bump_round(api, pr_number, labels)
 
+    # ---- reviewer MEMORY: rebuild from the PR's own history so each reviewer
+    # isn't seeing the diff stone-cold. Prior reviews are gated on the SAME
+    # signed-verdict trust as convergence (a PR author can't inject fake memory);
+    # standing operator decisions come only from the configured operator login.
+    # One comment fetch feeds both.
+    pr_comments = api.list_pr_comments(pr_number)
+    prior_review_history = summarize_prior_reviews(
+        (c.body for c in pr_comments), secret=secret
+    )
+    operator_decisions = summarize_operator_decisions(
+        ((c.author_login, c.body) for c in pr_comments),
+        operator_login=cfg.operator_github_login,
+    )
+
     # ---- run AI reviews for this round, tracking real cost and failures
     new_verdicts: list[Verdict] = []
     round_cost = 0.0
@@ -972,7 +987,8 @@ def _run_review_round(
             operator_note=operator_note,
             tier=tier,
             round_=round_,
-            prior_review_history=[],
+            prior_review_history=prior_review_history,
+            operator_decisions=operator_decisions,
             project_description=cfg.repo_config.project_description,
             review_guidance=cfg.repo_config.review_guidance,
         )
