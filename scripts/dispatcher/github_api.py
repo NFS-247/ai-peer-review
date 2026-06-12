@@ -94,6 +94,13 @@ class CheckRun:
     conclusion: Optional[str]  # "success", "failure", "neutral", etc.
 
 
+@dataclass(frozen=True)
+class PRReview:
+    author_login: str
+    state: str  # "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"
+    commit_id: str  # head SHA the review was submitted against
+
+
 class GitHubAPI:
     """Tiny GitHub REST client. Deliberately minimal."""
 
@@ -325,6 +332,34 @@ class GitHubAPI:
         ]
 
     # ---- reviews ---------------------------------------------------------
+
+    def list_pr_reviews(self, pr_number: int) -> list[PRReview]:
+        """All submitted reviews on a PR (paginated), oldest first.
+
+        Used to make the update-branch re-affirm idempotent: GitHub keeps a
+        dismissed approval's original commit_id, so "is there an APPROVED
+        review by us on the CURRENT head?" is answerable from this list.
+        """
+        out: list[PRReview] = []
+        page = 1
+        while True:
+            page_data = self._request(
+                "GET",
+                f"/repos/{self._owner}/{self._repo}/pulls/{pr_number}/reviews"
+                f"?per_page=100&page={page}",
+            )
+            for r in page_data:
+                out.append(
+                    PRReview(
+                        author_login=(r.get("user") or {}).get("login", ""),
+                        state=r.get("state", ""),
+                        commit_id=r.get("commit_id", ""),
+                    )
+                )
+            if len(page_data) < 100:
+                break
+            page += 1
+        return out
 
     def submit_review(
         self,
