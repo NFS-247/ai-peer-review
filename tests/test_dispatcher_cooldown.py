@@ -414,3 +414,55 @@ def test_converged_head_lock_fires_immediately_and_dedupes(monkeypatch):
     cross = label_state.read_cross_run_state(api, 101, "github-actions[bot]", "sek")
     assert cross.has_pending_escalation() is False
     assert cross.escalated_head_sha == "headsha1"
+
+
+def test_update_branch_reaffirms_ready_without_rereview(monkeypatch):
+    # Branch protection requires "up to date": the operator clicks Update branch ->
+    # NEW head, SAME diff. A ready PR must re-affirm (re-submit APPROVE) on the new
+    # head WITHOUT a fresh review round (no AI cost), restoring the approval GitHub
+    # dismissed so the PR can merge.
+    from scripts.dispatcher.verdict import (
+        build_verdict, compute_diff_sha256, compute_verdict_signature,
+    )
+    api = FakeAPI(files=["README.md"])
+    cfg = _cfg(cooldown=10)
+    diff_sha = compute_diff_sha256(api.get_pr_diff(101))
+    # a trusted signed verdict for the CURRENT diff, but an OLD head (pre-update):
+    v = build_verdict(reviewer="claude", verdict="approve", pr_number=101,
+                      head_sha="oldhead0", diff_sha256=diff_sha, tier="routine", round_=1)
+    sig = compute_verdict_signature(v, "sek")
+    api.comments[101] = [f"**Review from `claude`**\n\nok\n\n{v.to_yaml_block(signature=sig)}\n"]
+    api.add_labels(101, [label_state.LABEL_READY])
+
+    def _boom(r, c):
+        raise AssertionError("must not re-review on an update-branch")
+    monkeypatch.setattr(M, "_build_client", _boom)
+
+    M._run_review_round(cfg=cfg, api=api, pr_number=101)
+
+    assert (101, "APPROVE") in api.reviews                 # approval re-affirmed
+    assert label_state.LABEL_READY in api.labels.get(101, [])
+    assert len(api.comments.get(101, [])) == 1             # no new round, no new comments
+
+
+def test_operator_investigate_bypasses_update_branch_shortcut(monkeypatch):
+    # An explicit operator re-review (INVESTIGATE/DISCUSS carries a note) must run a
+    # real round even when the PR is ready and the diff is unchanged.
+    from scripts.dispatcher.verdict import (
+        build_verdict, compute_diff_sha256, compute_verdict_signature,
+    )
+    api = FakeAPI(files=["README.md"])
+    cfg = _cfg(cooldown=10)
+    diff_sha = compute_diff_sha256(api.get_pr_diff(101))
+    v = build_verdict(reviewer="claude", verdict="approve", pr_number=101,
+                      head_sha="oldhead0", diff_sha256=diff_sha, tier="routine", round_=1)
+    sig = compute_verdict_signature(v, "sek")
+    api.comments[101] = [f"**Review from `claude`**\n\nok\n\n{v.to_yaml_block(signature=sig)}\n"]
+    api.add_labels(101, [label_state.LABEL_READY])
+    _monotonic_verdict_clock(monkeypatch)
+    called = []
+    monkeypatch.setattr(M, "_build_client", lambda r, c: called.append(r) or ApproveClient(r))
+
+    M._run_review_round(cfg=cfg, api=api, pr_number=101, operator_note="re-check the importer")
+
+    assert called == ["claude"]   # reviewers WERE invoked despite ready + same diff

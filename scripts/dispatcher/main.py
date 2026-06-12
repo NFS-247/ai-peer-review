@@ -944,6 +944,33 @@ def _run_review_round(
     secret = cfg.verdict_secret or ""
     workflow_run_url = os.environ.get("GITHUB_RUN_URL", "")
 
+    # ---- UPDATE-BRANCH SHORTCUT: re-affirm a prior approval without re-reviewing.
+    # When branch protection requires an up-to-date branch, the operator must click
+    # "Update branch" before merging — that makes a NEW head commit (so GitHub
+    # dismisses the approving review) but does NOT change the PR's diff vs base. If
+    # the PR is already marked ready AND the current diff has already been reviewed
+    # (a trusted verdict exists for this exact diff_sha256), the prior sign-off
+    # still stands: re-submit the dispatcher's APPROVE review on the new head and
+    # stop — no fresh round, no AI cost. A REAL change (no verdict matches the new
+    # diff) falls through to a normal round. Operator INVESTIGATE/DISCUSS rounds
+    # carry a note and are NEVER shortcut — those explicitly want a re-review.
+    if (
+        not operator_note
+        and label_state.LABEL_READY in labels
+        and any(
+            v.diff_sha256 == diff_sha
+            for v in _trusted_existing_verdicts(api, pr_number, secret)
+        )
+    ):
+        api.submit_review(
+            pr_number,
+            event="APPROVE",
+            body="Re-affirming approval after a branch update: the PR's changes are "
+                 "unchanged (only the base was merged in), so the prior sign-off "
+                 "still stands. Dispatcher does NOT merge — click merge when ready.",
+        )
+        return 0
+
     # 24h spend at the start of this round (before reviewers) — used both for
     # the preflight ceiling check and the budget pre-warning crossing check.
     daily_before = 0.0
