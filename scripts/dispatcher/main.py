@@ -567,16 +567,19 @@ def _record_pending_escalation(
     trigger: str,
     reason_short: str,
     detail: str,
+    since: Optional[float] = None,
 ) -> None:
     """Record/refresh a deferred (cooldown-gated) escalation on ``cross``.
 
     The quiet timer (re)starts only when this is a NEW stall — a different head
     than the one already pending, or none pending yet. Re-evaluating the same
     head (e.g. an INVESTIGATE re-run) keeps the original timer so the operator
-    isn't kept waiting forever by repeated same-head events.
+    isn't kept waiting forever by repeated same-head events. ``since`` overrides
+    the timer's start (e.g. the state-driven sweep anchors it to the last review
+    so an already-quiet parked PR is due immediately, not a cooldown later).
     """
     if cross.pending_escalation_head_sha != head_sha or not cross.pending_escalation_since:
-        cross.pending_escalation_since = _now_ts()
+        cross.pending_escalation_since = since if since is not None else _now_ts()
     cross.pending_escalation_head_sha = head_sha
     cross.pending_escalation_trigger = trigger
     cross.pending_escalation_reason_short = reason_short
@@ -714,6 +717,135 @@ def _maybe_fire_due_escalation(*, cfg: DispatcherConfig, api: GitHubAPI, pr_numb
     return True
 
 
+def _latest_verdict_ts(verdicts) -> Optional[float]:
+    """Unix ts of the most recent verdict's emitted_at, or None.
+
+    Measures how long a PR has been quiet since its last review round, so the
+    state-driven sweep can anchor a stall's cooldown to real activity rather than
+    to when the sweep happened to notice it.
+    """
+    best: Optional[float] = None
+    for v in verdicts:
+        raw = (getattr(v, "emitted_at", "") or "").strip()
+        if not raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if best is None or ts > best:
+            best = ts
+    return best
+
+
+def _sweep_reevaluate_pr(*, cfg: DispatcherConfig, api: GitHubAPI, pr_number: int) -> None:
+    """State-driven re-evaluation for the periodic sweep (no reviewer calls).
+
+    The sweep otherwise only fires escalations a prior review ROUND pre-recorded as
+    pending. A PR that went READY or SPLIT-AND-QUIET while parked — or before the
+    relevant logic shipped — has no pending, so it would never reach the operator.
+    Here we recompute the PR's CURRENT state from its trusted verdicts and ping it
+    if it needs the operator, deduped by the ready/escalated labels so it never
+    repeats. CI-failure accounting is left to the event-driven path (not touched
+    here), so the sweep can't inflate the fix-attempt counter.
+    """
+    secret = cfg.verdict_secret or ""
+    if not secret:
+        return
+    # First honor any pre-recorded deferred escalation that's now due.
+    if _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=pr_number):
+        return
+    ctx = _resolve_pr_context(api, pr_number)
+    if ctx["state"] != "open":
+        return
+    labels = api.list_labels(pr_number)
+    if (
+        label_state.is_paused(labels)
+        or label_state.is_escalated(labels)
+        or label_state.LABEL_READY in labels
+    ):
+        return  # already actioned / waiting on the operator with a label
+    tier = label_state.read_tier_label(labels)
+    if tier is None or tier not in cfg.tiers:
+        return
+    tier_cfg = cfg.tiers[tier]
+    verdicts = _trusted_existing_verdicts(api, pr_number, secret)
+    if not verdicts:
+        return  # nothing reviewed yet — nothing to re-evaluate
+
+    ci_status = _ci_status_for(api, ctx["head_sha"])
+    convergence = check_convergence(
+        verdicts=verdicts,
+        required_reviewers=tier_cfg.reviewers,
+        current_head_sha=ctx["head_sha"],
+        current_diff_sha256=compute_diff_sha256(api.get_pr_diff(pr_number)),
+        ci_status=ci_status,
+        operator_pause_active=False,
+    )
+    cross = label_state.read_cross_run_state(api, pr_number, DISPATCHER_BOT_LOGIN, secret)
+    reviewer_summaries = {v.reviewer: f"{v.verdict} (round {v.round})" for v in verdicts}
+
+    # (a) Converged, but the ready / sign-off notification never landed (e.g. the
+    #     transition was deduped on a stale label, or it converged via a path that
+    #     didn't ping). Deliver it now.
+    if convergence.converged:
+        from .escalation import _diff_touches_head_lock  # local import
+
+        changed_files = api.get_pr_files(pr_number)
+        if tier == "high_stakes" and _diff_touches_head_lock(
+            changed_files, cfg.repo_config.head_lock_paths
+        ):
+            cross.clear_pending_escalation()
+            cross.escalated_head_sha = ctx["head_sha"]
+            label_state.write_cross_run_state(api, pr_number, cross, secret)
+            label_state.set_escalated(api, pr_number, api.list_labels(pr_number))
+            _send_escalation(
+                cfg=cfg, api=api, pr_number=pr_number, pr_url=ctx["url"],
+                pr_title=ctx["title"], tier=tier, branch=ctx["branch"],
+                head_sha=ctx["head_sha"],
+                reason_short="high-stakes file changed; operator review required",
+                detail="This PR touches files that require explicit operator "
+                       "approval before merge, regardless of AI convergence.",
+                reviewer_summaries=reviewer_summaries, ci_status=ci_status,
+                diff_summary=f"{len(changed_files)} file(s) changed",
+                workflow_run_url=os.environ.get("GITHUB_RUN_URL", ""),
+                trigger=EscalationTrigger.HIGH_STAKES_AUTO,
+            )
+            return
+        _mark_ready_and_notify(
+            cfg=cfg, api=api, pr_number=pr_number, pr_url=ctx["url"],
+            pr_title=ctx["title"], tier=tier,
+            body="✅ All required reviewers approved this head SHA. **Ready for "
+                 "operator merge.** Dispatcher does NOT merge — operator clicks the "
+                 "merge button manually.",
+        )
+        return
+
+    # (b) Split (a real dissent), CI not failing, gone QUIET past the cooldown, and
+    #     no pending was ever recorded -> record it anchored to the last review and
+    #     fire if due. This is the parked-split case the round-based path missed.
+    if (
+        ci_status != CIStatus.FAILURE
+        and convergence.non_approving_from
+        and not cross.has_pending_escalation()
+        and cfg.escalation_cooldown_minutes > 0
+    ):
+        last_ts = _latest_verdict_ts(verdicts)
+        if last_ts is not None:
+            blockers = ", ".join(sorted(convergence.non_approving_from))
+            _record_pending_escalation(
+                cross, ctx["head_sha"],
+                trigger=EscalationTrigger.DISAGREEMENT_STALLED.value,
+                reason_short="reviewers split and the change has gone quiet",
+                detail=f"The review panel is split — {blockers} requested changes — "
+                       f"and no new commit has landed, so the change appears stalled. "
+                       f"Your call: approve over the dissent, send it back, or block it.",
+                since=last_ts,
+            )
+            label_state.write_cross_run_state(api, pr_number, cross, secret)
+            _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=pr_number)
+
+
 def _run_cooldown_sweep(*, cfg: DispatcherConfig, api: GitHubAPI) -> int:
     """schedule event: fire any deferred escalations whose cooldown has elapsed.
 
@@ -733,7 +865,10 @@ def _run_cooldown_sweep(*, cfg: DispatcherConfig, api: GitHubAPI) -> int:
         try:
             if not any(lbl.startswith(label_state.TIER_LABEL_PREFIX) for lbl in labels):
                 continue
-            _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=n)
+            # State-driven: fire a due pending AND catch parked PRs (ready or
+            # split-and-quiet) that never recorded one, so nothing needing the
+            # operator can silently sit unseen.
+            _sweep_reevaluate_pr(cfg=cfg, api=api, pr_number=n)
         except Exception:  # noqa: BLE001
             continue
     return 0
