@@ -176,24 +176,35 @@ def find_references(
     return results
 
 
-def _checkout_is_pr_head(root: Path, head_sha: str) -> bool:
-    """True if the checkout at ``root`` is the PR HEAD commit (untrusted).
+def _checkout_is_trusted_base(
+    root: Path, trusted_refs: Sequence[str], base_sha: str
+) -> bool:
+    """True only if the checkout at ``root`` is PROVABLY a trusted base (allowlist).
 
-    The dispatcher must read base-branch code only. The canonical caller workflow
-    checks out the default branch, so HEAD is never the PR head — but this is the
-    enforced backstop: a checkout of a specific commit (how a PR head is pulled)
-    leaves ``.git/HEAD`` holding that raw SHA, so if it equals the PR head we
-    refuse to read the tree. A branch checkout leaves a symbolic ``ref: …`` (never
-    equal to a SHA), and any read failure is treated as "not provably the head" so
-    the documented base-checkout setup is unaffected.
+    The dispatcher must read base-branch code only, never the PR head — otherwise a
+    PR author could inject arbitrary content into the model prompt. Rather than
+    denylist the known-bad PR head SHA (which misses a PR-branch or merge-ref
+    checkout), this is an allowlist: read ``.git/HEAD`` and trust ONLY
+
+      - a branch checkout (symbolic ``ref: refs/heads/<name>``) whose ``<name>`` is
+        in ``trusted_refs`` (the repo default branch + the PR's base branch — never
+        the PR's head branch), or
+      - a detached checkout whose raw SHA equals ``base_sha``.
+
+    Everything else — a checkout of the PR head branch, the ``refs/pull/N/merge``
+    ref, a detached PR-head commit, or an unreadable HEAD — is refused (fail
+    closed). The canonical caller workflow checks out ``default_branch``, which is
+    a symbolic ref in ``trusted_refs``, so it is accepted.
     """
-    if not head_sha:
-        return False
     try:
-        head_ref = (root / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+        head = (root / ".git" / "HEAD").read_text(encoding="utf-8").strip()
     except OSError:
         return False
-    return head_ref == head_sha.strip()
+    branch_prefix = "ref: refs/heads/"
+    if head.startswith(branch_prefix):
+        return head[len(branch_prefix):] in set(trusted_refs)
+    # A detached HEAD holds the raw commit SHA; trust it only if it is the base.
+    return bool(base_sha) and head == base_sha.strip()
 
 
 def build_repository_context(
@@ -201,26 +212,36 @@ def build_repository_context(
     root: str | os.PathLike | None,
     changed_files: Sequence[str],
     diff_text: str,
-    head_sha: str = "",
+    trusted_refs: Sequence[str] = (),
+    base_sha: str = "",
     budget_chars: int = _DEFAULT_BUDGET_CHARS,
 ) -> str:
     """Assemble the prompt 'existing code on the base branch' section, or "".
 
     ``root`` is the base-branch checkout (typically ``$GITHUB_WORKSPACE``).
-    Returns "" when ``root`` is unset/missing/empty, when ``budget_chars`` <= 0,
-    or when the checkout is provably the PR head (``head_sha`` — untrusted, so it
-    is refused). Otherwise it always emits the repo map (orientation); the
-    callers/blast-radius block is added only when the diff defines recognizable
-    symbols. The whole section is capped at ``budget_chars`` with an explicit
-    truncation marker, and the map shows an honest "N of M files" marker when the
-    repo has more source files than fit.
+    Returns "" when ``root`` is unset/missing/empty or ``budget_chars`` <= 0.
+
+    Trust: when ``trusted_refs`` or ``base_sha`` is given (the orchestrator always
+    passes them — the repo default branch, the PR base branch, and the base SHA),
+    the checkout must PROVABLY be one of those base refs (see
+    ``_checkout_is_trusted_base``) or "" is returned, so a PR-head/branch/merge-ref
+    checkout can't inject content. With neither given, the trust check is skipped —
+    the caller (e.g. a test) vouches for ``root``.
+
+    Otherwise it always emits the repo map (orientation); the callers/blast-radius
+    block is added only when the diff defines recognizable symbols. The whole
+    section is capped at ``budget_chars`` with an explicit truncation marker, and
+    the map shows an honest "N of M files" marker when the repo has more source
+    files than fit.
     """
     if not root or budget_chars <= 0:
         return ""
     root_path = Path(root)
     if not root_path.is_dir():
         return ""
-    if _checkout_is_pr_head(root_path, head_sha):
+    if (trusted_refs or base_sha) and not _checkout_is_trusted_base(
+        root_path, trusted_refs, base_sha
+    ):
         return ""
 
     all_files = _iter_source_files(root_path)

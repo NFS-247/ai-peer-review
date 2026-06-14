@@ -125,20 +125,54 @@ def test_zero_budget_returns_empty(tmp_path):
     ) == ""
 
 
-def test_refuses_to_read_pr_head_checkout(tmp_path):
-    # Trust enforcement: if the workspace checkout is the PR head (.git/HEAD holds
-    # that raw SHA, as a detached commit checkout does), refuse to read it so a PR
-    # author can't inject context.
+def _set_head(tmp_path, value):
+    p = tmp_path / ".git" / "HEAD"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(value + "\n", encoding="utf-8")
+
+
+def test_refuses_untrusted_checkouts(tmp_path):
+    # Allowlist trust: only a provable base checkout is read. A PR-branch ref, a
+    # merge ref, a detached PR-head commit, and an unreadable HEAD are all refused.
     _mk(tmp_path, "a.py", "def calculate_total(x):\n    return x\n")
-    _mk(tmp_path, ".git/HEAD", "deadbeefcafe\n")
     diff = "+def calculate_total(x):\n"
-    assert RS.build_repository_context(
-        root=str(tmp_path), changed_files=[], diff_text=diff, head_sha="deadbeefcafe"
-    ) == ""
-    # A branch checkout leaves a symbolic ref (never a SHA) -> trusted, context built.
-    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    kw = dict(changed_files=[], diff_text=diff, trusted_refs=["main"], base_sha="basesha0")
+
+    _set_head(tmp_path, "ref: refs/heads/feature-x")          # PR head branch
+    assert RS.build_repository_context(root=str(tmp_path), **kw) == ""
+    _set_head(tmp_path, "ref: refs/pull/3/merge")             # PR merge ref
+    assert RS.build_repository_context(root=str(tmp_path), **kw) == ""
+    _set_head(tmp_path, "prheadsha9")                         # detached at PR head
+    assert RS.build_repository_context(root=str(tmp_path), **kw) == ""
+    # No .git/HEAD at all -> can't prove base -> refused.
+    (tmp_path / ".git" / "HEAD").unlink()
+    assert RS.build_repository_context(root=str(tmp_path), **kw) == ""
+
+
+def test_accepts_trusted_base_checkouts(tmp_path):
+    _mk(tmp_path, "a.py", "def calculate_total(x):\n    return x\n")
+    diff = "+def calculate_total(x):\n"
+
+    # A branch checkout of a trusted ref (default branch / PR base) is read.
+    _set_head(tmp_path, "ref: refs/heads/main")
+    assert "Repo file map:" in RS.build_repository_context(
+        root=str(tmp_path), changed_files=[], diff_text=diff,
+        trusted_refs=["main", "release"], base_sha="basesha0",
+    )
+    # A detached checkout at the base SHA is read.
+    _set_head(tmp_path, "basesha0")
+    assert "Repo file map:" in RS.build_repository_context(
+        root=str(tmp_path), changed_files=[], diff_text=diff,
+        trusted_refs=["main"], base_sha="basesha0",
+    )
+
+
+def test_no_trust_params_skips_check_for_vouching_caller(tmp_path):
+    # With no trust identifiers the builder skips the checkout guard (the caller
+    # vouches for the root); the orchestrator always passes them in production.
+    _mk(tmp_path, "a.py", "def calculate_total(x):\n    return x\n")
     ctx = RS.build_repository_context(
-        root=str(tmp_path), changed_files=[], diff_text=diff, head_sha="deadbeefcafe"
+        root=str(tmp_path), changed_files=[], diff_text="+def calculate_total(x):\n",
     )
     assert "Repo file map:" in ctx
 

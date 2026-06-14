@@ -735,6 +735,7 @@ def _run_cooldown_sweep(*, cfg: DispatcherConfig, api: GitHubAPI) -> int:
 
 def _resolve_pr_context(api: GitHubAPI, pr_number: int) -> dict:
     pr = api.get_pr(pr_number)
+    base = pr.get("base", {}) or {}
     return {
         "head_sha": pr.get("head", {}).get("sha", ""),
         "branch": pr.get("head", {}).get("ref", ""),
@@ -742,6 +743,12 @@ def _resolve_pr_context(api: GitHubAPI, pr_number: int) -> dict:
         "body": pr.get("body", "") or "",
         "url": pr.get("html_url", ""),
         "state": pr.get("state", ""),
+        # Base identifiers used to enforce the repo-context trust boundary (read
+        # only a base-branch checkout, never the PR head). base_ref is the branch
+        # the PR targets; default_branch is what the canonical workflow checks out.
+        "base_ref": base.get("ref", ""),
+        "base_sha": base.get("sha", ""),
+        "default_branch": (base.get("repo", {}) or {}).get("default_branch", ""),
     }
 
 
@@ -1097,19 +1104,22 @@ def _run_review_round(
     # Existing base-branch code the change must not break: a repo map + the
     # callers of what this PR changes, so reviewers judge cross-file impact rather
     # than reading the diff in isolation. Read from the base checkout
-    # ($GITHUB_WORKSPACE); ``head_sha`` lets the builder REFUSE to read the tree if
-    # a misconfigured caller checked out the PR head instead of the base, so a PR
-    # author can't inject context. Computed once and shared by every reviewer this
-    # round. Best-effort: a missing/untrusted workspace or any read error yields
-    # "" and the round proceeds exactly as before.
+    # ($GITHUB_WORKSPACE) — but ONLY when that checkout is provably a trusted base
+    # ref (the repo default branch, the PR's base branch, or the base SHA), so a
+    # misconfigured caller that checked out the PR head/branch/merge-ref can't let
+    # an author inject context. Fail closed: if the base can't be determined, skip.
+    # Computed once and shared by every reviewer this round; any error yields "".
     repo_context = ""
-    if cfg.repo_config.repo_context_enabled:
+    default_branch = ctx.get("default_branch", "")
+    if cfg.repo_config.repo_context_enabled and default_branch:
+        trusted_refs = [r for r in (default_branch, ctx.get("base_ref", "")) if r]
         try:
             repo_context = build_repository_context(
                 root=os.environ.get("GITHUB_WORKSPACE"),
                 changed_files=changed_files,
                 diff_text=diff_text,
-                head_sha=head_sha,
+                trusted_refs=trusted_refs,
+                base_sha=ctx.get("base_sha", ""),
                 budget_chars=cfg.repo_config.repo_context_budget_chars,
             )
         except Exception:  # noqa: BLE001
