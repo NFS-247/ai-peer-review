@@ -6,7 +6,9 @@ clients read each provider's cache fields and discount accordingly, so the spend
 ledger reflects the real (lower) bill rather than full-rating every token.
 """
 
-from scripts.dispatcher import call_claude, call_gemini, call_gpt
+import pytest
+
+from scripts.dispatcher import call_claude, call_gemini, call_gpt, call_grok
 
 
 def test_gpt_discounts_cached_tokens(monkeypatch):
@@ -214,3 +216,57 @@ def test_gpt_read_timeout_clamps_and_accepts_float(monkeypatch):
     monkeypatch.setenv("OPENAI_READ_TIMEOUT", "300.0")
     call_gpt.GPTClient(api_key="k", model="gpt-5").review("p")
     assert captured["timeout"] == 300
+
+
+def test_grok_discounts_cached_tokens(monkeypatch):
+    # xAI is OpenAI-shaped; cached prompt tokens (when reported) are discounted.
+    payload = {
+        "choices": [{"message": {"content": "{}"}}],
+        "usage": {
+            "prompt_tokens": 1_000_000,
+            "completion_tokens": 0,
+            "prompt_tokens_details": {"cached_tokens": 800_000},
+        },
+    }
+    monkeypatch.setattr(
+        call_grok, "request_json_with_retry", lambda req, provider, timeout, **kw: payload
+    )
+    resp = call_grok.GrokClient(api_key="k", model="grok-4").review("p")
+    # grok-4 input $3/M, cache 0.25x. 200k fresh + 800k cached.
+    expected = round((200_000 * 3.0 + 800_000 * 3.0 * 0.25) / 1_000_000, 6)
+    assert resp.cost_usd == expected
+    assert resp.input_tokens == 1_000_000   # total still recorded for the ledger
+    assert resp.model == "grok-4"
+
+
+def test_grok_no_cache_fields_is_plain_cost(monkeypatch):
+    # xAI may omit cached-token details -> exactly tokens x rate (unchanged).
+    payload = {
+        "choices": [{"message": {"content": "{}"}}],
+        "usage": {"prompt_tokens": 40_000, "completion_tokens": 1_000},
+    }
+    monkeypatch.setattr(
+        call_grok, "request_json_with_retry", lambda req, provider, timeout, **kw: payload
+    )
+    resp = call_grok.GrokClient(api_key="k", model="grok-4").review("p")
+    assert resp.cost_usd == round((40_000 * 3.0 + 1_000 * 15.0) / 1_000_000, 6)
+
+
+def test_grok_requires_api_key():
+    with pytest.raises(ValueError):
+        call_grok.GrokClient(api_key="")
+
+
+def test_grok_disables_timeout_retry(monkeypatch):
+    # Money-path invariant: no idempotency key here, so a read timeout must never
+    # be retried (could double-bill). Pin the 300s reviewer window + retries=0.
+    seen = {}
+
+    def cap(req, provider, timeout=None, **kw):
+        seen["call"] = (provider, timeout, kw.get("timeout_retries"))
+        return {"choices": [{"message": {"content": "{}"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    monkeypatch.setattr(call_grok, "request_json_with_retry", cap)
+    call_grok.GrokClient(api_key="k", model="grok-4").review("p")
+    assert seen["call"] == ("xAI", 300, 0)

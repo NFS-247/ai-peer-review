@@ -105,6 +105,7 @@ _PROVIDER_DASHBOARD: dict[str, tuple[str, str]] = {
     "claude": ("🔧 Check Claude (Anthropic)", "https://console.anthropic.com/settings/usage"),
     "gpt": ("🔧 Check GPT (OpenAI)", "https://platform.openai.com/usage"),
     "gemini": ("🔧 Check Gemini (AI Studio)", "https://aistudio.google.com/"),
+    "grok": ("🔧 Check Grok (xAI)", "https://console.x.ai/"),
 }
 
 

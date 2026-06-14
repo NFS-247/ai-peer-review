@@ -37,7 +37,7 @@ from typing import Mapping, Optional
 
 
 # provider key -> env-var prefix (matches each provider's *_API_KEY name).
-_ENV_PREFIX = {"claude": "ANTHROPIC", "gpt": "OPENAI", "gemini": "GEMINI"}
+_ENV_PREFIX = {"claude": "ANTHROPIC", "gpt": "OPENAI", "gemini": "GEMINI", "grok": "XAI"}
 
 # provider -> { model-or-family : (input_per_M, output_per_M) in USD }.
 # Published list prices, early 2026. These are DEFAULTS; override via env for
@@ -73,6 +73,17 @@ _PRICE_TABLES: dict[str, dict[str, tuple[float, float]]] = {
         "gemini-1.5-pro": (1.25, 5.00),
         "gemini-1.5-flash": (0.075, 0.30),
     },
+    # xAI Grok. List rates mid-2026; these move and are env-overridable
+    # (XAI_INPUT_PRICE_PER_M / XAI_OUTPUT_PRICE_PER_M) for an exact ledger.
+    "grok": {
+        "grok-4": (3.00, 15.00),
+        "grok-4-fast": (0.20, 0.50),
+        "grok-4-heavy": (3.00, 15.00),
+        "grok-code-fast-1": (0.20, 1.50),
+        "grok-3": (2.00, 10.00),
+        "grok-3-mini": (0.30, 0.50),
+        "grok-2": (2.00, 10.00),
+    },
 }
 
 # provider -> the table key whose price is the last-resort default (used when a
@@ -81,6 +92,7 @@ _DEFAULT_MODEL_KEY = {
     "claude": "claude-opus-4",
     "gpt": "gpt-5",
     "gemini": "gemini-2.5-pro",
+    "grok": "grok-4",
 }
 
 # Discount applied to CACHED (prompt-cache-hit) input tokens relative to the
@@ -89,8 +101,8 @@ _DEFAULT_MODEL_KEY = {
 # on a multi-round PR the same diff is re-sent every round, so counting cached
 # tokens at full rate re-inflates spend. Env-overridable per provider:
 # <PROVIDER>_CACHED_INPUT_DISCOUNT / <PROVIDER>_CACHE_WRITE_MULT.
-_CACHE_READ_DISCOUNT = {"claude": 0.1, "gpt": 0.5, "gemini": 0.25}
-_CACHE_WRITE_MULT = {"claude": 1.25, "gpt": 1.0, "gemini": 1.0}
+_CACHE_READ_DISCOUNT = {"claude": 0.1, "gpt": 0.5, "gemini": 0.25, "grok": 0.25}
+_CACHE_WRITE_MULT = {"claude": 1.25, "gpt": 1.0, "gemini": 1.0, "grok": 1.0}
 
 
 def _table_lookup(table: Mapping[str, tuple[float, float]], model: str) -> Optional[tuple[float, float]]:

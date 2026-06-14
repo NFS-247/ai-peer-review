@@ -64,17 +64,17 @@
     },
     "routine_reviewers": {
       "type": "array",
-      "items": { "type": "string", "enum": ["claude", "gpt", "gemini"] },
+      "items": { "type": "string", "enum": ["claude", "gpt", "gemini", "grok"] },
       "description": "Reviewer roster for the routine tier."
     },
     "backend_reviewers": {
       "type": "array",
-      "items": { "type": "string", "enum": ["claude", "gpt", "gemini"] },
+      "items": { "type": "string", "enum": ["claude", "gpt", "gemini", "grok"] },
       "description": "Reviewer roster for the backend tier."
     },
     "high_stakes_reviewers": {
       "type": "array",
-      "items": { "type": "string", "enum": ["claude", "gpt", "gemini"] },
+      "items": { "type": "string", "enum": ["claude", "gpt", "gemini", "grok"] },
       "description": "Reviewer roster for the high_stakes tier."
     },
     "claude_model": {
@@ -88,6 +88,10 @@
     "gemini_model": {
       "type": "string",
       "description": "Model id for the Gemini reviewer (e.g. 'gemini-2.5-flash' to cut cost ~4x vs the default pro). Empty = built-in default. Spend is priced for the chosen model. A GEMINI_MODEL env var overrides this."
+    },
+    "grok_model": {
+      "type": "string",
+      "description": "Model id for the optional Grok reviewer (e.g. 'grok-4-fast' to cut cost vs the default grok-4). Empty = built-in default. Spend is priced for the chosen model. A GROK_MODEL env var overrides this. Only used when 'grok' is in a tier roster and XAI_API_KEY is set."
     },
     "max_review_rounds": {
       "type": "integer",

@@ -40,6 +40,10 @@ class DispatcherConfig:
     resend_api_key: Optional[str]
     github_token: Optional[str]
     verdict_secret: Optional[str]
+    # xAI key for the optional Grok reviewer. Like the others, a reviewer is only
+    # callable when its key is set; "grok" is opt-in (not in any default roster),
+    # so an unset key never escalates a PR.
+    xai_api_key: Optional[str] = None
     google_chat_webhook_url: Optional[str] = None
     approve_webapp_url: Optional[str] = None
     approve_signing_secret: Optional[str] = None
@@ -65,6 +69,7 @@ class DispatcherConfig:
     claude_model: str = ""
     gpt_model: str = ""
     gemini_model: str = ""
+    grok_model: str = ""
     # Billing (see usage.py): how this tenant is charged for AI usage.
     billing_mode: str = "byok"
     usage_markup_multiplier: float = 1.0
@@ -183,6 +188,7 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
     claude_model = (e.get("ANTHROPIC_MODEL") or rc.claude_model or "").strip()
     gpt_model = (e.get("OPENAI_MODEL") or rc.gpt_model or "").strip()
     gemini_model = (e.get("GEMINI_MODEL") or rc.gemini_model or "").strip()
+    grok_model = (e.get("GROK_MODEL") or rc.grok_model or "").strip()
     # Escalation email sender: env override > repo config > "" (default sender).
     email_from = (e.get("EMAIL_FROM") or rc.email_from or "").strip()
 
@@ -195,6 +201,7 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         anthropic_api_key=secret("ANTHROPIC_API_KEY"),
         openai_api_key=secret("OPENAI_API_KEY"),
         gemini_api_key=secret("GEMINI_API_KEY"),
+        xai_api_key=secret("XAI_API_KEY"),
         resend_api_key=secret("RESEND_API_KEY"),
         github_token=secret("GITHUB_TOKEN"),
         verdict_secret=secret("DISPATCHER_VERDICT_SECRET"),
@@ -216,6 +223,7 @@ def load_from_env(env: Optional[dict] = None) -> DispatcherConfig:
         claude_model=claude_model,
         gpt_model=gpt_model,
         gemini_model=gemini_model,
+        grok_model=grok_model,
         repo_config=rc,
     )
 
