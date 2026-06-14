@@ -107,3 +107,56 @@ def test_context_truncates_to_budget(tmp_path):
     )
     assert len(ctx) <= 300 + 100        # capped near budget (+ the truncation note)
     assert "truncated" in ctx
+
+
+def test_changed_symbols_skips_dunders_and_generic_names():
+    diff = "+def __init__(self):\n+def parse(self):\n+class build:\n+def calculate_total(x):\n"
+    syms = RS.changed_symbols(diff)
+    assert "__init__" not in syms        # dunder: everywhere, no signal
+    assert "parse" not in syms           # generic stop-list
+    assert "build" not in syms           # generic stop-list
+    assert "calculate_total" in syms     # a specific name is still surfaced
+
+
+def test_zero_budget_returns_empty(tmp_path):
+    _mk(tmp_path, "a.py", "def thing():\n    pass\n")
+    assert RS.build_repository_context(
+        root=str(tmp_path), changed_files=[], diff_text="+def thing():\n", budget_chars=0
+    ) == ""
+
+
+def test_refuses_to_read_pr_head_checkout(tmp_path):
+    # Trust enforcement: if the workspace checkout is the PR head (.git/HEAD holds
+    # that raw SHA, as a detached commit checkout does), refuse to read it so a PR
+    # author can't inject context.
+    _mk(tmp_path, "a.py", "def calculate_total(x):\n    return x\n")
+    _mk(tmp_path, ".git/HEAD", "deadbeefcafe\n")
+    diff = "+def calculate_total(x):\n"
+    assert RS.build_repository_context(
+        root=str(tmp_path), changed_files=[], diff_text=diff, head_sha="deadbeefcafe"
+    ) == ""
+    # A branch checkout leaves a symbolic ref (never a SHA) -> trusted, context built.
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    ctx = RS.build_repository_context(
+        root=str(tmp_path), changed_files=[], diff_text=diff, head_sha="deadbeefcafe"
+    )
+    assert "Repo file map:" in ctx
+
+
+def test_map_shows_honest_truncation_marker(tmp_path, monkeypatch):
+    for i in range(6):
+        _mk(tmp_path, f"f{i}.py", "x = 1\n")
+    monkeypatch.setattr(RS, "_MAX_MAP_FILES", 2)
+    ctx = RS.build_repository_context(root=str(tmp_path), changed_files=[], diff_text="")
+    assert "showing 2 of 6 source files" in ctx
+
+
+def test_caller_found_regardless_of_alphabetical_position(tmp_path):
+    # Discovery walks the WHOLE tree: a caller in a late-named dir is still found
+    # behind many earlier non-referencing files (the cap is on results, not walk).
+    for i in range(30):
+        _mk(tmp_path, f"aaa_{i:02d}.py", "x = 1\n")
+    _mk(tmp_path, "core.py", "def apply_cadence(n):\n    return n\n")
+    _mk(tmp_path, "zzz_last/caller.py", "from core import apply_cadence\napply_cadence(1)\n")
+    refs = RS.find_references(tmp_path, ["apply_cadence"], exclude=["core.py"])
+    assert "zzz_last/caller.py" in [p for p, _ in refs]

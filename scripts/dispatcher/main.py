@@ -1096,10 +1096,12 @@ def _run_review_round(
 
     # Existing base-branch code the change must not break: a repo map + the
     # callers of what this PR changes, so reviewers judge cross-file impact rather
-    # than reading the diff in isolation. Read from the TRUSTED base checkout
-    # ($GITHUB_WORKSPACE — never the PR head), computed once and shared by every
-    # reviewer this round. Best-effort: a missing workspace or any read error
-    # yields "" and the round proceeds exactly as before.
+    # than reading the diff in isolation. Read from the base checkout
+    # ($GITHUB_WORKSPACE); ``head_sha`` lets the builder REFUSE to read the tree if
+    # a misconfigured caller checked out the PR head instead of the base, so a PR
+    # author can't inject context. Computed once and shared by every reviewer this
+    # round. Best-effort: a missing/untrusted workspace or any read error yields
+    # "" and the round proceeds exactly as before.
     repo_context = ""
     if cfg.repo_config.repo_context_enabled:
         try:
@@ -1107,6 +1109,7 @@ def _run_review_round(
                 root=os.environ.get("GITHUB_WORKSPACE"),
                 changed_files=changed_files,
                 diff_text=diff_text,
+                head_sha=head_sha,
                 budget_chars=cfg.repo_config.repo_context_budget_chars,
             )
         except Exception:  # noqa: BLE001
