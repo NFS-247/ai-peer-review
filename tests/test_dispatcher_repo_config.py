@@ -164,3 +164,26 @@ def test_resolve_repo_config_prefers_first_existing(tmp_path):
     assert cfg2.project_name == "FromPrimary"
     # neither -> generic defaults
     assert RC.resolve_repo_config(tmp_path / "a.json", tmp_path / "b.json") == RC.RepoConfig()
+
+
+def test_grok_model_roundtrips_and_grok_roster_accepted(tmp_path):
+    # grok_model is a known string field; "grok" is a valid roster member so a
+    # tenant can opt grok into the high_stakes panel via committed config.
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({
+        "grok_model": "grok-4-fast",
+        "high_stakes_reviewers": ["claude", "gpt", "gemini", "grok"],
+    }), encoding="utf-8")
+    cfg = RC.load_repo_config(p)
+    assert cfg.grok_model == "grok-4-fast"
+    assert cfg.high_stakes_reviewers == ("claude", "gpt", "gemini", "grok")
+    assert cfg.to_dict()["grok_model"] == "grok-4-fast"
+
+
+def test_grok_not_in_default_roster():
+    # Opt-in: grok must NOT be in any default roster, so an existing tenant
+    # without XAI_API_KEY never escalates on a missing grok verdict.
+    cfg = RC.RepoConfig()
+    assert "grok" not in cfg.high_stakes_reviewers
+    assert "grok" not in cfg.routine_reviewers
+    assert "grok" not in cfg.backend_reviewers

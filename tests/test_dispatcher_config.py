@@ -13,6 +13,7 @@ SECRET_VARS = [
     ("ANTHROPIC_API_KEY", "anthropic_api_key"),
     ("OPENAI_API_KEY", "openai_api_key"),
     ("GEMINI_API_KEY", "gemini_api_key"),
+    ("XAI_API_KEY", "xai_api_key"),
     ("RESEND_API_KEY", "resend_api_key"),
     ("GITHUB_TOKEN", "github_token"),
     ("DISPATCHER_VERDICT_SECRET", "verdict_secret"),
@@ -204,3 +205,19 @@ def test_tiers_from_repo_config_maps_rosters():
     assert tiers["routine"].reviewers == ("claude",)
     assert tiers["routine"].round_budget == 4
     assert tiers["high_stakes"].round_budget == 1
+
+
+def test_xai_key_and_grok_model_load():
+    # XAI_API_KEY loads like the other secrets; GROK_MODEL resolves via env.
+    env = {"GITHUB_TOKEN": "tok", "XAI_API_KEY": "  xk \n", "GROK_MODEL": " grok-4-fast "}
+    cfg = load_from_env(env)
+    assert cfg.xai_api_key == "xk"
+    assert cfg.grok_model == "grok-4-fast"
+
+
+def test_xai_key_absent_is_none_and_grok_not_default():
+    # Opt-in posture: no key -> None, and grok is in no default tier roster.
+    cfg = load_from_env({"GITHUB_TOKEN": "tok"})
+    assert cfg.xai_api_key is None
+    for tier in cfg.tiers.values():
+        assert "grok" not in tier.reviewers

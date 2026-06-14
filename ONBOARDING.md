@@ -73,6 +73,7 @@ You only ever do this once. After it's done, every future project inherits it.
 4. **Org secrets (shared keys)** → `NFS-247` org → Settings → Secrets and
    variables → Actions → **New organization secret**, granted to all repos:
    `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, and (optional)
+   `XAI_API_KEY` (Grok — only called when `grok` is added to a tier roster),
    `GOOGLE_CHAT_WEBHOOK_URL`, `APPROVE_WEBAPP_URL`, `APPROVE_SIGNING_SECRET`,
    `OPERATOR_GITHUB_LOGIN`, `OPERATOR_EMAIL`, `RESEND_API_KEY`.
 

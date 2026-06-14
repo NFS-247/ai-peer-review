@@ -93,6 +93,10 @@ class RepoConfig:
     claude_model: str = ""
     gpt_model: str = ""
     gemini_model: str = ""
+    # Optional model for the Grok reviewer (xAI). Empty = the client default.
+    # Honors the GROK_MODEL env var, else the built-in default. "grok" is opt-in:
+    # add it to a tier roster above AND set XAI_API_KEY to enable it.
+    grok_model: str = ""
 
     # Budgets and ceilings.
     max_review_rounds: int = 6
@@ -140,6 +144,7 @@ class RepoConfig:
             "claude_model": self.claude_model,
             "gpt_model": self.gpt_model,
             "gemini_model": self.gemini_model,
+            "grok_model": self.grok_model,
             "max_review_rounds": self.max_review_rounds,
             "routine_round_budget": self.routine_round_budget,
             "backend_round_budget": self.backend_round_budget,
@@ -177,6 +182,7 @@ _STR_FIELDS = {
     "claude_model",
     "gpt_model",
     "gemini_model",
+    "grok_model",
 }
 _INT_FIELDS = {
     "max_review_rounds",

@@ -41,7 +41,7 @@ def test_build_verdict_roundtrip():
 def test_build_verdict_rejects_bad_reviewer():
     with pytest.raises(ValueError):
         build_verdict(
-            reviewer="grok",
+            reviewer="not_a_reviewer",
             verdict=VERDICT_APPROVE,
             pr_number=1,
             head_sha="abc1234",

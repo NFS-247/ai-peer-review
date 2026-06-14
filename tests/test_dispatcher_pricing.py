@@ -118,3 +118,18 @@ def test_cache_discount_env_overridable():
         output_tokens=0, env=env,
     )
     assert cost == 0.0
+
+
+def test_grok_pricing_resolves():
+    assert resolve_prices("grok", "grok-4") == (3.00, 15.00)
+    assert resolve_prices("grok", "grok-4-fast") == (0.20, 0.50)
+    # A dated/suffixed id resolves to the longest family prefix.
+    assert resolve_prices("grok", "grok-3-mini-2026") == (0.30, 0.50)
+    # An unknown grok model falls back to the provider default (grok-4).
+    assert resolve_prices("grok", "grok-9-ultra") == (3.00, 15.00)
+
+
+def test_grok_env_override_uses_xai_prefix():
+    # The price override prefix follows XAI_API_KEY, not the model family name.
+    env = {"XAI_INPUT_PRICE_PER_M": "1.0", "XAI_OUTPUT_PRICE_PER_M": "2.0"}
+    assert resolve_prices("grok", "grok-4", env=env) == (1.0, 2.0)

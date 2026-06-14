@@ -164,3 +164,44 @@ def test_high_stakes_requires_three_reviewers():
     )
     assert not s.converged
     assert "gemini" in s.missing_from
+
+
+def test_grok_as_binding_fourth_reviewer_converges():
+    # All four (including grok) approve -> converged. Proves grok counts.
+    s = check_convergence(
+        verdicts=[_v("claude", VERDICT_APPROVE), _v("gpt", VERDICT_APPROVE),
+                  _v("gemini", VERDICT_APPROVE), _v("grok", VERDICT_APPROVE)],
+        required_reviewers=["claude", "gpt", "gemini", "grok"],
+        current_head_sha=HEAD_SHA, current_diff_sha256=DIFF_SHA,
+        ci_status=CIStatus.SUCCESS, operator_pause_active=False,
+    )
+    assert s.converged
+    assert s.reason == "all_required_reviewers_approve"
+
+
+def test_grok_dissent_blocks_convergence():
+    # grok is binding: its request_changes prevents convergence even with the
+    # other three approving.
+    s = check_convergence(
+        verdicts=[_v("claude", VERDICT_APPROVE), _v("gpt", VERDICT_APPROVE),
+                  _v("gemini", VERDICT_APPROVE), _v("grok", VERDICT_REQUEST_CHANGES)],
+        required_reviewers=["claude", "gpt", "gemini", "grok"],
+        current_head_sha=HEAD_SHA, current_diff_sha256=DIFF_SHA,
+        ci_status=CIStatus.SUCCESS, operator_pause_active=False,
+    )
+    assert not s.converged
+    assert "grok" in s.non_approving_from
+
+
+def test_grok_missing_verdict_blocks_convergence():
+    # A rostered grok with no verdict yet -> not converged, grok flagged missing
+    # (this is why a grok roster without XAI_API_KEY would escalate; hence opt-in).
+    s = check_convergence(
+        verdicts=[_v("claude", VERDICT_APPROVE), _v("gpt", VERDICT_APPROVE),
+                  _v("gemini", VERDICT_APPROVE)],
+        required_reviewers=["claude", "gpt", "gemini", "grok"],
+        current_head_sha=HEAD_SHA, current_diff_sha256=DIFF_SHA,
+        ci_status=CIStatus.SUCCESS, operator_pause_active=False,
+    )
+    assert not s.converged
+    assert "grok" in s.missing_from

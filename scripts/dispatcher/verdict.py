@@ -29,7 +29,7 @@ VERDICT_ABSTAIN = "abstain"
 
 VALID_VERDICTS = frozenset({VERDICT_APPROVE, VERDICT_REQUEST_CHANGES, VERDICT_ABSTAIN})
 
-VALID_REVIEWERS = frozenset({"claude", "gpt", "gemini"})
+VALID_REVIEWERS = frozenset({"claude", "gpt", "gemini", "grok"})
 
 VERDICT_FENCE_OPEN = "```tradewatcher-verdict"
 VERDICT_FENCE_CLOSE = "```"

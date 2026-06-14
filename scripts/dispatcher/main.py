@@ -35,6 +35,7 @@ from .review_context import (
 from .call_claude import ClaudeClient
 from .call_gemini import GeminiClient
 from .call_gpt import GPTClient
+from .call_grok import GrokClient
 from .classify import classify
 from .config import DispatcherConfig, load_from_env
 from .converge import CIStatus, check_convergence
@@ -155,6 +156,8 @@ def _build_client(reviewer: str, cfg: DispatcherConfig) -> Optional[AIClient]:
             return GPTClient(api_key=cfg.openai_api_key, model=cfg.gpt_model or None)
         if reviewer == "gemini" and cfg.gemini_api_key:
             return GeminiClient(api_key=cfg.gemini_api_key, model=cfg.gemini_model or None)
+        if reviewer == "grok" and cfg.xai_api_key:
+            return GrokClient(api_key=cfg.xai_api_key, model=cfg.grok_model or None)
     except Exception:
         return None
     return None
@@ -1487,6 +1490,7 @@ def run() -> int:
     # the dispatcher posts, even if it surfaces inside an exception string.
     for s in (
         cfg.anthropic_api_key, cfg.openai_api_key, cfg.gemini_api_key,
+        cfg.xai_api_key,
         cfg.resend_api_key, cfg.github_token, cfg.verdict_secret,
         cfg.google_chat_webhook_url, cfg.approve_webapp_url,
         cfg.approve_signing_secret, cfg.github_app_private_key,

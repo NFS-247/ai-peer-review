@@ -73,6 +73,7 @@ Safety properties (see `scripts/dispatcher/README.md` and the design doc):
    | `ANTHROPIC_API_KEY` | org | for Claude reviews | Claude reviewer |
    | `OPENAI_API_KEY` | org | for GPT reviews | GPT reviewer |
    | `GEMINI_API_KEY` | org | for Gemini reviews | Gemini reviewer (high-stakes) |
+   | `XAI_API_KEY` | org | optional | Grok reviewer (opt-in: add `grok` to a tier roster in `.peer-review.json` to enable) |
    | `GOOGLE_CHAT_WEBHOOK_URL` | org | optional | mobile escalation + merge-ready pings |
    | `APPROVE_WEBAPP_URL` / `APPROVE_SIGNING_SECRET` | org | optional | one-tap approve (links are HMAC-bound per repo+PR, so sharing is safe) |
    | `OPERATOR_GITHUB_LOGIN` | org | recommended | who may issue `OPERATOR` commands |

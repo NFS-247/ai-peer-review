@@ -27,6 +27,10 @@ inputs:
     description: "Gemini API key (Gemini reviewer, high-stakes)."
     required: false
     default: ""
+  xai_api_key:
+    description: "xAI API key (optional Grok reviewer). Only called when 'grok' is added to a tier roster; an unset key is harmless."
+    required: false
+    default: ""
   resend_api_key:
     description: "Resend API key for escalation email (optional; falls back to a PR comment)."
     required: false
@@ -116,6 +120,7 @@ runs:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
         OPENAI_API_KEY: ${{ inputs.openai_api_key }}
         GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
+        XAI_API_KEY: ${{ inputs.xai_api_key }}
         RESEND_API_KEY: ${{ inputs.resend_api_key }}
         OPERATOR_EMAIL: ${{ inputs.operator_email }}
         OPERATOR_GITHUB_LOGIN: ${{ inputs.operator_github_login }}
