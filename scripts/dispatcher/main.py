@@ -1014,6 +1014,19 @@ def _run_review_round(
         # escalation to consider; labels and cross-run state already say "ready".
         return 0
 
+    # A REAL review round is about to run (the update-branch reaffirm shortcut
+    # above already returned for the unchanged-diff case). If the PR still carries
+    # a ready label from a PRIOR converged head, drop it: the content is being
+    # re-reviewed, so it is NOT ready until it re-converges. This also un-dedupes
+    # the ready notification — without it, a sticky LABEL_READY made every
+    # re-convergence after a new commit skip the "ready for merge" ping
+    # (_mark_ready_and_notify returns early when the label is already present), so
+    # an operator who didn't merge the first ready state got no fresh card for the
+    # current one (observed on nfs-central #119).
+    if label_state.LABEL_READY in labels:
+        label_state.clear_ready(api, pr_number, labels)
+        labels = [l for l in labels if l != label_state.LABEL_READY]
+
     # 24h spend at the start of this round (before reviewers) — used both for
     # the preflight ceiling check and the budget pre-warning crossing check.
     daily_before = 0.0
