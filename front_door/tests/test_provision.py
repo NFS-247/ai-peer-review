@@ -86,6 +86,19 @@ def test_provision_secrets_written_before_workflow():
     assert last_secret < first_file
 
 
+def test_provision_workflow_committed_last_after_config():
+    # The workflow is the activation switch (schedule + PR triggers): it must be
+    # the very last write, after BOTH secrets and the roster config. Otherwise a
+    # subset-of-providers repo could fire a run on default rosters (requiring gpt)
+    # before the override config lands — the stall this whole change prevents.
+    c = FakeClient()
+    P.provision(c, owner="a", repo="r", operator_login="a",
+                api_keys={"anthropic": "x", "gemini": "y"})
+    files = [path for kind, path in c.ops if kind == "file"]
+    assert files.index(P.CONFIG_PATH) < files.index(P.WORKFLOW_PATH)
+    assert c.ops[-1] == ("file", P.WORKFLOW_PATH)   # nothing written after it
+
+
 def test_provision_wires_existing_repo_without_creating():
     c = FakeClient(existing={("alice", "idea")})
     res = P.provision(c, owner="alice", repo="idea", operator_login="alice",

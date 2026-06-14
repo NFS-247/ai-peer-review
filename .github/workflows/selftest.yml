@@ -26,5 +26,10 @@ jobs:
       # dev dependency and must be installed — a clean setup-python has no pytest.
       - name: Install pytest
         run: python -m pip install --upgrade pip pytest
-      - name: Run tests
+      - name: Run dispatcher tests
         run: python -m pytest tests/ -q
+      - name: Run front_door tests
+        # The front_door web app is stdlib + pytest only (like the dispatcher) but
+        # lives outside testpaths=["tests"], so without an explicit path it is
+        # silently never exercised in CI.
+        run: python -m pytest front_door/tests/ -q

@@ -157,8 +157,9 @@ def provision(
     never requires a model the repo has no key for. At least one provider is
     required (two or more for genuinely adversarial review).
 
-    Secrets are written BEFORE the workflow is committed, so wiring a repo that
-    already has open PRs can't trigger a key-less review run.
+    The workflow is the activation switch, so it is committed LAST — after both
+    the secrets and the roster config — so wiring a repo that already has open PRs
+    can't trigger a run that reads default rosters or runs key-less.
     """
     if not owner or not repo:
         raise ValueError("owner and repo are required")
@@ -184,12 +185,17 @@ def provision(
         client.set_secret(owner, repo, secret_name, api_keys[p].strip())
         set_names.append(secret_name)
 
-    # Then the workflow + the roster-matched config.
-    client.put_file(owner, repo, WORKFLOW_PATH, caller_workflow_yaml(),
-                    "Add AI peer-review workflow")
+    # Config BEFORE workflow, workflow LAST. The workflow is the activation
+    # switch — it carries the schedule cron and the pull_request triggers — so it
+    # must be the final write, after BOTH the secrets and the roster config are in
+    # place. If it landed first, a scheduled/PR-triggered run could fire reading
+    # the default rosters (which require gpt) before the subset override exists,
+    # recreating the very "required reviewer unavailable" stall this prevents.
     client.put_file(owner, repo, CONFIG_PATH,
                     peer_review_config_json(operator_login, reviewers),
                     "Add AI peer-review config")
+    client.put_file(owner, repo, WORKFLOW_PATH, caller_workflow_yaml(),
+                    "Add AI peer-review workflow")
 
     return ProvisionResult(owner=owner, repo=repo, created=created,
                            reviewers=reviewers, secrets_set=tuple(set_names))
