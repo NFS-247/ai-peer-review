@@ -47,7 +47,7 @@
 
   "routine_reviewers": ["claude", "gpt"],
   "backend_reviewers": ["claude", "gpt"],
-  "high_stakes_reviewers": ["claude", "gpt", "gemini"],
+  "high_stakes_reviewers": ["claude", "gpt", "gemini", "grok"],
 
   "max_review_rounds": 6,
   "high_stakes_round_budget": 2,
