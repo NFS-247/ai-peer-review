@@ -187,3 +187,24 @@ def test_grok_not_in_default_roster():
     assert "grok" not in cfg.high_stakes_reviewers
     assert "grok" not in cfg.routine_reviewers
     assert "grok" not in cfg.backend_reviewers
+
+
+def test_repo_context_defaults_and_override(tmp_path):
+    cfg = RC.RepoConfig()
+    assert cfg.repo_context_enabled is True
+    assert cfg.repo_context_budget_chars == 30000
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps(
+        {"repo_context_enabled": False, "repo_context_budget_chars": 5000}
+    ), encoding="utf-8")
+    loaded = RC.load_repo_config(p)
+    assert loaded.repo_context_enabled is False
+    assert loaded.repo_context_budget_chars == 5000
+    assert loaded.to_dict()["repo_context_enabled"] is False
+
+
+def test_repo_context_enabled_rejects_non_bool(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"repo_context_enabled": "yes"}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        RC.load_repo_config(p)
