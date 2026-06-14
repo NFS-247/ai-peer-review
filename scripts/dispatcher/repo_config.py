@@ -67,6 +67,14 @@ class RepoConfig:
     project_description: str = ""
     review_guidance: tuple[str, ...] = ()
 
+    # Repository context: feed reviewers a bounded view of the EXISTING base-branch
+    # code the change must not break (a repo map + the callers of what the PR
+    # changes), so they catch cross-file breakage instead of reviewing the diff in
+    # isolation. On by default; set false to save tokens. The char budget caps how
+    # much is injected per review (the whole section is truncated to fit).
+    repo_context_enabled: bool = True
+    repo_context_budget_chars: int = 30000
+
     # Classification (mirrors classify.py defaults).
     high_stakes_paths: tuple[str, ...] = HIGH_STAKES_PATH_PATTERNS
     content_scan_safety_tokens: tuple[str, ...] = CONTENT_SAFETY_TOKENS
@@ -130,6 +138,8 @@ class RepoConfig:
             "email_from": self.email_from,
             "project_description": self.project_description,
             "review_guidance": list(self.review_guidance),
+            "repo_context_enabled": self.repo_context_enabled,
+            "repo_context_budget_chars": self.repo_context_budget_chars,
             "high_stakes_paths": list(self.high_stakes_paths),
             "content_scan_safety_tokens": list(self.content_scan_safety_tokens),
             "content_scan_safety_patterns": list(self.content_scan_safety_patterns),
@@ -190,6 +200,10 @@ _INT_FIELDS = {
     "backend_round_budget",
     "high_stakes_round_budget",
     "escalation_cooldown_minutes",
+    "repo_context_budget_chars",
+}
+_BOOL_FIELDS = {
+    "repo_context_enabled",
 }
 _FLOAT_FIELDS = {
     "per_pr_cost_ceiling_usd",
@@ -199,7 +213,7 @@ _FLOAT_FIELDS = {
     "dev_fee_usd",
 }
 
-_KNOWN_FIELDS = _STR_TUPLE_FIELDS | _STR_FIELDS | _INT_FIELDS | _FLOAT_FIELDS
+_KNOWN_FIELDS = _STR_TUPLE_FIELDS | _STR_FIELDS | _INT_FIELDS | _FLOAT_FIELDS | _BOOL_FIELDS
 
 
 def from_mapping(data: dict[str, Any]) -> RepoConfig:
@@ -220,6 +234,10 @@ def from_mapping(data: dict[str, Any]) -> RepoConfig:
         elif key in _STR_FIELDS:
             if not isinstance(value, str):
                 raise ValueError(f"config field {key!r} must be a string")
+            overrides[key] = value
+        elif key in _BOOL_FIELDS:
+            if not isinstance(value, bool):
+                raise ValueError(f"config field {key!r} must be a boolean")
             overrides[key] = value
         elif key in _INT_FIELDS:
             if isinstance(value, bool) or not isinstance(value, int):

@@ -199,3 +199,21 @@ def test_reviewers_require_context_to_approve():
     assert "MUST be able to state what this change is for" in flat
     assert "do NOT approve: request changes" in flat
     assert "required to give you that context" in flat
+
+
+def test_prompt_includes_repo_context_when_provided():
+    prompt = build_review_prompt(
+        reviewer="claude", pr_number=1, pr_title="T", pr_body="b",
+        diff_text="@@ diff @@", tier="backend", round_=1,
+        repo_context="Repo file map:\napp/core.py\napp/ui.py",
+    )
+    assert "Repo file map:" in prompt
+    assert "app/ui.py" in prompt
+
+
+def test_prompt_omits_repo_context_when_empty():
+    prompt = build_review_prompt(
+        reviewer="gpt", pr_number=1, pr_title="T", pr_body="b",
+        diff_text="@@ diff @@", tier="backend", round_=1,
+    )
+    assert "Repo file map:" not in prompt

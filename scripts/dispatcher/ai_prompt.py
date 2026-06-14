@@ -125,6 +125,7 @@ def build_review_prompt(
     operator_note: str = "",
     operator_decisions: Sequence[str] = (),
     commit_messages: Sequence[str] = (),
+    repo_context: str = "",
     project_description: str = "",
     review_guidance: Sequence[str] = (),
 ) -> str:
@@ -138,7 +139,10 @@ def build_review_prompt(
     resolved concerns. ``operator_decisions`` are the owner's STANDING rulings on
     this PR (OPERATOR APPROVE/INVESTIGATE/...): reviewers honor them and do not
     relitigate. ``commit_messages`` are the PR's commit log — the author's own
-    narration of intent, which the diff alone doesn't convey.
+    narration of intent, which the diff alone doesn't convey. ``repo_context`` is
+    a bounded view of the EXISTING base-branch code the change must not break (a
+    repo map + the callers of what this PR changes — see repo_snapshot), so a
+    reviewer can judge cross-file impact instead of seeing the diff in isolation.
     ``project_description`` / ``review_guidance`` inject the consuming repo's
     domain context (from its .peer-review.json) so reviews are tailored per
     tenant instead of hard-coded to one project.
@@ -195,6 +199,10 @@ def build_review_prompt(
             ---
         """).strip() + "\n\n"
 
+    repo_context_section = ""
+    if repo_context.strip():
+        repo_context_section = repo_context.strip() + "\n\n---\n\n"
+
     return dedent(f"""
         {common}
 
@@ -221,7 +229,7 @@ def build_review_prompt(
 
         ---
 
-        Reply with a single JSON object per the schema above. No other text.
+        {repo_context_section}Reply with a single JSON object per the schema above. No other text.
     """).strip()
 
 

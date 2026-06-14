@@ -22,6 +22,15 @@
       "items": { "type": "string" },
       "description": "Project-specific bug classes for reviewers to hunt for, injected into the prompt as a 'specifically for THIS project, also look for' list (e.g. lookahead bias, broker order paths). Default: empty (generic adversarial review only)."
     },
+    "repo_context_enabled": {
+      "type": "boolean",
+      "description": "Feed reviewers a bounded view of the existing base-branch code the change must not break (a repo file map + the callers of what the PR changes), so they catch cross-file breakage instead of reviewing the diff in isolation. Default true. Set false to save review tokens."
+    },
+    "repo_context_budget_chars": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Max characters of repository context injected per review (the section is truncated to fit). Default 30000. Lower it to cut token cost, raise it for more cross-file context."
+    },
     "high_stakes_paths": {
       "type": "array",
       "items": { "type": "string" },

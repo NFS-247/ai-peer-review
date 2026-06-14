@@ -72,6 +72,7 @@ from .parse_reply import (
     parse_operator_command,
 )
 from .post_review import post_ai_review
+from .repo_snapshot import build_repository_context
 from .redact import redact, register_secret
 from . import state as label_state
 from . import global_state
@@ -1093,6 +1094,24 @@ def _run_review_round(
     except Exception:  # noqa: BLE001
         commit_messages = []
 
+    # Existing base-branch code the change must not break: a repo map + the
+    # callers of what this PR changes, so reviewers judge cross-file impact rather
+    # than reading the diff in isolation. Read from the TRUSTED base checkout
+    # ($GITHUB_WORKSPACE — never the PR head), computed once and shared by every
+    # reviewer this round. Best-effort: a missing workspace or any read error
+    # yields "" and the round proceeds exactly as before.
+    repo_context = ""
+    if cfg.repo_config.repo_context_enabled:
+        try:
+            repo_context = build_repository_context(
+                root=os.environ.get("GITHUB_WORKSPACE"),
+                changed_files=changed_files,
+                diff_text=diff_text,
+                budget_chars=cfg.repo_config.repo_context_budget_chars,
+            )
+        except Exception:  # noqa: BLE001
+            repo_context = ""
+
     # ---- run AI reviews for this round, tracking real cost and failures
     new_verdicts: list[Verdict] = []
     round_cost = 0.0
@@ -1115,6 +1134,7 @@ def _run_review_round(
             prior_review_history=prior_review_history,
             operator_decisions=operator_decisions,
             commit_messages=commit_messages,
+            repo_context=repo_context,
             project_description=cfg.repo_config.project_description,
             review_guidance=cfg.repo_config.review_guidance,
         )
