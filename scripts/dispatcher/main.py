@@ -738,6 +738,82 @@ def _latest_verdict_ts(verdicts) -> Optional[float]:
     return best
 
 
+def _notify_converged(
+    *,
+    cfg: DispatcherConfig,
+    api: GitHubAPI,
+    pr_number: int,
+    ctx: dict,
+    tier: str,
+    cross: "label_state.CrossRunState",
+    secret: str,
+    verdicts,
+    ci_status: CIStatus,
+) -> None:
+    """A converged PR needs the operator: head-lock => sign-off escalation, else
+    => ready for merge. Shared by the check_run path and the state-driven sweep so
+    the two can't drift. Deduped per head — ``escalated_head_sha`` for the sign-off,
+    ``LABEL_READY`` (inside ``_mark_ready_and_notify``) for ready — so a re-run, a
+    re-delivered event, or a later sweep on the same commit never double-posts even
+    if a label drifted off. Call only when converged and not already escalated.
+    """
+    changed_files = api.get_pr_files(pr_number)
+    # High-stakes head-lock files still require operator approval even when
+    # converged; do not mark ready in that case.
+    from .escalation import _diff_touches_head_lock  # local import
+
+    if tier == "high_stakes" and _diff_touches_head_lock(
+        changed_files, cfg.repo_config.head_lock_paths
+    ):
+        # Ping once per head. The escalated_head_sha guard (not just the label)
+        # makes a repeat on the same commit a no-op even if the label drifted off.
+        if cross.escalated_head_sha != ctx["head_sha"]:
+            # Send FIRST, then record escalated state, so a failed send leaves the
+            # head un-escalated for the next run rather than dropping the ping.
+            _send_escalation(
+                cfg=cfg,
+                api=api,
+                pr_number=pr_number,
+                pr_url=ctx["url"],
+                pr_title=ctx["title"],
+                tier=tier,
+                branch=ctx["branch"],
+                head_sha=ctx["head_sha"],
+                reason_short="high-stakes file changed; operator review required",
+                detail="This PR touches files that require explicit operator "
+                       "approval before merge, regardless of AI convergence.",
+                reviewer_summaries={
+                    v.reviewer: f"{v.verdict} (round {v.round})" for v in verdicts
+                },
+                ci_status=ci_status,
+                diff_summary=f"{len(changed_files)} file(s) changed",
+                workflow_run_url=os.environ.get("GITHUB_RUN_URL", ""),
+                trigger=EscalationTrigger.HIGH_STAKES_AUTO,
+            )
+            cross.clear_pending_escalation()
+            cross.escalated_head_sha = ctx["head_sha"]
+            label_state.write_cross_run_state(api, pr_number, cross, secret)
+            label_state.set_escalated(api, pr_number, api.list_labels(pr_number))
+        return
+    # Converged and clear: ready for merge. Drop any stale pending stall FIRST (so
+    # it can never fire later as a bogus "split" escalation), then notify once
+    # (deduped on LABEL_READY inside _mark_ready_and_notify).
+    if cross.has_pending_escalation() or cross.escalated_head_sha:
+        cross.clear_pending_escalation()
+        cross.escalated_head_sha = ""
+        label_state.write_cross_run_state(api, pr_number, cross, secret)
+    _mark_ready_and_notify(
+        cfg=cfg,
+        api=api,
+        pr_number=pr_number,
+        pr_url=ctx["url"],
+        pr_title=ctx["title"],
+        tier=tier,
+        body="✅ CI passed and all required reviewers approved this head "
+             "SHA. **Ready for operator merge.** Dispatcher does NOT merge.",
+    )
+
+
 def _sweep_reevaluate_pr(*, cfg: DispatcherConfig, api: GitHubAPI, pr_number: int) -> None:
     """State-driven re-evaluation for the periodic sweep (no reviewer calls).
 
@@ -751,9 +827,6 @@ def _sweep_reevaluate_pr(*, cfg: DispatcherConfig, api: GitHubAPI, pr_number: in
     """
     secret = cfg.verdict_secret or ""
     if not secret:
-        return
-    # First honor any pre-recorded deferred escalation that's now due.
-    if _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=pr_number):
         return
     ctx = _resolve_pr_context(api, pr_number)
     if ctx["state"] != "open":
@@ -783,42 +856,20 @@ def _sweep_reevaluate_pr(*, cfg: DispatcherConfig, api: GitHubAPI, pr_number: in
         operator_pause_active=False,
     )
     cross = label_state.read_cross_run_state(api, pr_number, DISPATCHER_BOT_LOGIN, secret)
-    reviewer_summaries = {v.reviewer: f"{v.verdict} (round {v.round})" for v in verdicts}
 
-    # (a) Converged, but the ready / sign-off notification never landed (e.g. the
-    #     transition was deduped on a stale label, or it converged via a path that
-    #     didn't ping). Deliver it now.
+    # (a) Converged but the ready / sign-off notification never landed (the
+    #     transition was missed or deduped on a stale label). Deliver it now.
+    #     Convergence is checked BEFORE firing any pending, so a PR that was split
+    #     and then converged is marked ready — never a stale "split" escalation.
     if convergence.converged:
-        from .escalation import _diff_touches_head_lock  # local import
-
-        changed_files = api.get_pr_files(pr_number)
-        if tier == "high_stakes" and _diff_touches_head_lock(
-            changed_files, cfg.repo_config.head_lock_paths
-        ):
-            cross.clear_pending_escalation()
-            cross.escalated_head_sha = ctx["head_sha"]
-            label_state.write_cross_run_state(api, pr_number, cross, secret)
-            label_state.set_escalated(api, pr_number, api.list_labels(pr_number))
-            _send_escalation(
-                cfg=cfg, api=api, pr_number=pr_number, pr_url=ctx["url"],
-                pr_title=ctx["title"], tier=tier, branch=ctx["branch"],
-                head_sha=ctx["head_sha"],
-                reason_short="high-stakes file changed; operator review required",
-                detail="This PR touches files that require explicit operator "
-                       "approval before merge, regardless of AI convergence.",
-                reviewer_summaries=reviewer_summaries, ci_status=ci_status,
-                diff_summary=f"{len(changed_files)} file(s) changed",
-                workflow_run_url=os.environ.get("GITHUB_RUN_URL", ""),
-                trigger=EscalationTrigger.HIGH_STAKES_AUTO,
-            )
-            return
-        _mark_ready_and_notify(
-            cfg=cfg, api=api, pr_number=pr_number, pr_url=ctx["url"],
-            pr_title=ctx["title"], tier=tier,
-            body="✅ All required reviewers approved this head SHA. **Ready for "
-                 "operator merge.** Dispatcher does NOT merge — operator clicks the "
-                 "merge button manually.",
+        _notify_converged(
+            cfg=cfg, api=api, pr_number=pr_number, ctx=ctx, tier=tier,
+            cross=cross, secret=secret, verdicts=verdicts, ci_status=ci_status,
         )
+        return
+
+    # Not converged: fire a pre-recorded deferred escalation if it's now due.
+    if _maybe_fire_due_escalation(cfg=cfg, api=api, pr_number=pr_number):
         return
 
     # (b) Split (a real dissent), CI not failing, gone QUIET past the cooldown, and
@@ -1010,66 +1061,11 @@ def _run_convergence_only(
     )
 
     if convergence.converged and not label_state.is_escalated(labels):
-        changed_files = api.get_pr_files(pr_number)
-        # High-stakes head-lock files still require operator approval even when
-        # converged; do not mark ready in that case.
-        from .escalation import _diff_touches_head_lock  # local import
-
-        if tier == "high_stakes" and _diff_touches_head_lock(
-            changed_files, cfg.repo_config.head_lock_paths
-        ):
-            # Operator sign-off required — but the PR has CONVERGED (every required
-            # reviewer approved this head), so there's no dev iteration to protect.
-            # Ping NOW instead of deferring to the cooldown/sweep; that deferral is
-            # exactly what silently dropped the "all approved, needs your signature"
-            # ping on a converged head-lock PR. Dedupe per head SHA so a re-run or
-            # a re-delivered CI-complete event on the same commit can't re-ping
-            # (belt-and-suspenders with the not-is_escalated guard on the block).
-            if cross.escalated_head_sha != ctx["head_sha"]:
-                # Send FIRST, then record escalated state. A failed send (rare —
-                # _send_escalation falls back to a durable PR comment) then leaves
-                # the head un-escalated so the NEXT run retries, rather than marking
-                # it escalated and dropping the operator ping permanently.
-                _send_escalation(
-                    cfg=cfg,
-                    api=api,
-                    pr_number=pr_number,
-                    pr_url=ctx["url"],
-                    pr_title=ctx["title"],
-                    tier=tier,
-                    branch=ctx["branch"],
-                    head_sha=ctx["head_sha"],
-                    reason_short="high-stakes file changed; operator review required",
-                    detail="This PR touches files that require explicit operator "
-                           "approval before merge, regardless of AI convergence.",
-                    reviewer_summaries={
-                        v.reviewer: f"{v.verdict} (round {v.round})" for v in verdicts
-                    },
-                    ci_status=ci_status,
-                    diff_summary=f"{len(changed_files)} file(s) changed",
-                    workflow_run_url=os.environ.get("GITHUB_RUN_URL", ""),
-                    trigger=EscalationTrigger.HIGH_STAKES_AUTO,
-                )
-                cross.clear_pending_escalation()
-                cross.escalated_head_sha = ctx["head_sha"]
-                label_state.write_cross_run_state(api, pr_number, cross, secret)
-                label_state.set_escalated(api, pr_number, api.list_labels(pr_number))
-            return 0
-        # Converged and clear: ready for merge. Drop any pending stall, then
-        # notify once (durable comment + mobile ping for all tiers).
-        if cross.has_pending_escalation() or cross.escalated_head_sha:
-            cross.clear_pending_escalation()
-            cross.escalated_head_sha = ""
-            label_state.write_cross_run_state(api, pr_number, cross, secret)
-        _mark_ready_and_notify(
-            cfg=cfg,
-            api=api,
-            pr_number=pr_number,
-            pr_url=ctx["url"],
-            pr_title=ctx["title"],
-            tier=tier,
-            body="✅ CI passed and all required reviewers approved this head "
-                 "SHA. **Ready for operator merge.** Dispatcher does NOT merge.",
+        # Converged -> ready (or head-lock sign-off). Shared with the state-driven
+        # sweep so the two paths can't drift; deduped per head inside the helper.
+        _notify_converged(
+            cfg=cfg, api=api, pr_number=pr_number, ctx=ctx, tier=tier,
+            cross=cross, secret=secret, verdicts=verdicts, ci_status=ci_status,
         )
         return 0
 

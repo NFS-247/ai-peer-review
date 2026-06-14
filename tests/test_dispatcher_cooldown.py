@@ -723,3 +723,76 @@ def test_sweep_skips_already_ready_pr(monkeypatch):
 
     assert label_state.LABEL_ESCALATED not in api.labels.get(101, [])
     assert len(api.comments.get(101, [])) == before   # no new ping
+
+
+def test_sweep_head_lock_converged_no_duplicate_escalation(monkeypatch):
+    # claude #27 round 1: a converged head-lock PR escalates once; a second sweep
+    # must NOT re-fire even if the escalated LABEL drifted off — the dedup is on
+    # cross.escalated_head_sha, not just the label.
+    from scripts.dispatcher.verdict import compute_diff_sha256
+    api = FakeAPI(files=["backend/app/broker.py"])
+    cfg = _cfg(reviewers=("claude", "gpt"), cooldown=10, head_lock=("backend/app/broker*.py",))
+    label_state.set_tier(api, 101, "high_stakes", api.list_labels(101))
+    diff_sha = compute_diff_sha256(api.get_pr_diff(101))
+    for r in ("claude", "gpt"):
+        _post_signed_verdict(api, 101, r, "approve", head="headsha1", diff_sha=diff_sha,
+                             emitted_at="2026-01-01T00:00:00Z")
+    _clock(monkeypatch, {"t": 1_900_000_000.0})
+    calls = []
+    real = M._send_escalation
+    monkeypatch.setattr(M, "_send_escalation", lambda **kw: calls.append(1) or real(**kw))
+
+    M._run_cooldown_sweep(cfg=cfg, api=api)
+    assert label_state.LABEL_ESCALATED in api.labels.get(101, [])
+    api.remove_label(101, label_state.LABEL_ESCALATED)   # simulate label drift
+    M._run_cooldown_sweep(cfg=cfg, api=api)
+
+    assert len(calls) == 1   # deduped on escalated_head_sha, not the label
+
+
+def test_sweep_ready_converged_no_duplicate_ping(monkeypatch):
+    from scripts.dispatcher.verdict import compute_diff_sha256
+    api = FakeAPI(files=["README.md"])
+    cfg = _cfg(reviewers=("claude", "gpt"), cooldown=10)
+    label_state.set_tier(api, 101, "routine", api.list_labels(101))
+    diff_sha = compute_diff_sha256(api.get_pr_diff(101))
+    for r in ("claude", "gpt"):
+        _post_signed_verdict(api, 101, r, "approve", head="headsha1", diff_sha=diff_sha,
+                             emitted_at="2026-01-01T00:00:00Z")
+    _clock(monkeypatch, {"t": 1_900_000_000.0})
+
+    M._run_cooldown_sweep(cfg=cfg, api=api)
+    assert label_state.LABEL_READY in api.labels.get(101, [])
+    n = api.comment_texts(101).count("Ready for operator merge")
+    M._run_cooldown_sweep(cfg=cfg, api=api)   # second sweep -> top label guard
+    assert api.comment_texts(101).count("Ready for operator merge") == n   # no duplicate
+
+
+def test_sweep_converged_clears_stale_pending_no_escalation(monkeypatch):
+    # gpt #27 round 1: a PR that had a pending split escalation but has since
+    # CONVERGED must be marked ready (pending cleared) — NOT fire the stale split
+    # escalation. Convergence is checked before any pending is fired.
+    from datetime import datetime, timezone
+    from scripts.dispatcher.verdict import compute_diff_sha256
+    api = FakeAPI(files=["README.md"])
+    cfg = _cfg(reviewers=("claude", "gpt"), cooldown=10)
+    label_state.set_tier(api, 101, "routine", api.list_labels(101))
+    diff_sha = compute_diff_sha256(api.get_pr_diff(101))
+    for r in ("claude", "gpt"):
+        _post_signed_verdict(api, 101, r, "approve", head="headsha1", diff_sha=diff_sha,
+                             emitted_at="2026-01-01T00:00:00Z")
+    vts = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+    cross = label_state.read_cross_run_state(api, 101, "github-actions[bot]", "sek")
+    M._record_pending_escalation(cross, "headsha1", trigger="disagreement_stalled",
+                                 reason_short="reviewers split", detail="d", since=vts)
+    label_state.write_cross_run_state(api, 101, cross, "sek")
+    _clock(monkeypatch, {"t": vts + 100 * 60})   # long past cooldown
+
+    M._run_cooldown_sweep(cfg=cfg, api=api)
+
+    assert label_state.LABEL_READY in api.labels.get(101, [])
+    assert label_state.LABEL_ESCALATED not in api.labels.get(101, [])
+    cross2 = label_state.read_cross_run_state(api, 101, "github-actions[bot]", "sek")
+    assert cross2.has_pending_escalation() is False
+    M._run_cooldown_sweep(cfg=cfg, api=api)   # later sweep still no escalation
+    assert label_state.LABEL_ESCALATED not in api.labels.get(101, [])
