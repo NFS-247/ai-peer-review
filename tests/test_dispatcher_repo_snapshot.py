@@ -105,7 +105,7 @@ def test_context_truncates_to_budget(tmp_path):
     ctx = RS.build_repository_context(
         root=str(tmp_path), changed_files=["core.py"], diff_text=diff, budget_chars=300
     )
-    assert len(ctx) <= 300 + 100        # capped near budget (+ the truncation note)
+    assert len(ctx) <= 300              # final string (incl. marker) stays within budget
     assert "truncated" in ctx
 
 

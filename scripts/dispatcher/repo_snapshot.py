@@ -13,12 +13,14 @@ things for the prompt:
 
 Trust: it reads the BASE branch only, never the PR head. The canonical caller
 workflow checks out ``ref: default_branch`` into ``GITHUB_WORKSPACE`` — but rather
-than rely on that alone, ``build_repository_context`` is handed the PR head SHA and
-REFUSES to read the tree if the checkout is the PR head (``.git/HEAD`` resolves to
-that SHA). So a misconfigured caller that checked out the PR head can't inject
-attacker-controlled files into the prompt. Everything is bounded by a char budget
-so it can't blow up token cost; on a missing/empty/untrusted workspace it returns
-"" and the feature no-ops.
+than rely on that alone, ``build_repository_context`` is given the trusted base
+identifiers (the repo default branch, the PR's base branch, and the base SHA) and
+reads the tree ONLY when ``.git/HEAD`` provably resolves to one of them (an
+allowlist — see ``_checkout_is_trusted_base``). A PR-head/branch checkout, a
+``refs/pull/N/merge`` ref, or an unreadable HEAD is refused, so a misconfigured
+caller can't let a PR author inject attacker-controlled files into the prompt.
+Everything is bounded by a char budget so it can't blow up token cost; on a
+missing/empty/untrusted workspace it returns "" and the feature no-ops.
 
 Pure / stdlib-only (os, re, pathlib): takes a root path, returns a prompt string.
 """
@@ -279,10 +281,11 @@ def build_repository_context(
 
     section = "\n".join(parts)
     if len(section) > budget_chars:
-        section = (
-            section[:budget_chars].rstrip()
-            + "\n… (repository context truncated to fit the review budget)"
-        )
+        # Keep the FINAL string within budget: reserve room for the marker so the
+        # truncated section + marker never exceeds budget_chars.
+        marker = "\n… (repository context truncated to fit the review budget)"
+        keep = budget_chars - len(marker)
+        section = (section[:keep].rstrip() + marker) if keep > 0 else section[:budget_chars]
     return section
 
 
