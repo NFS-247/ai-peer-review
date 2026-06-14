@@ -215,9 +215,13 @@ def test_xai_key_and_grok_model_load():
     assert cfg.grok_model == "grok-4-fast"
 
 
-def test_xai_key_absent_is_none_and_grok_not_default():
-    # Opt-in posture: no key -> None, and grok is in no default tier roster.
-    cfg = load_from_env({"GITHUB_TOKEN": "tok"})
+def test_xai_key_absent_is_none_and_grok_not_default(tmp_path):
+    # Opt-in posture: no key -> None, and grok is in no BUILT-IN default roster.
+    # Isolate from this repo's own .peer-review.json (which now opts grok into its
+    # high_stakes panel) by pointing at a nonexistent path, so this tests the code
+    # defaults — not the shipped config — same as the sibling default-config tests.
+    cfg = load_from_env({"GITHUB_TOKEN": "tok",
+                         REPO_CONFIG_PATH_ENV: str(tmp_path / "nope.json")})
     assert cfg.xai_api_key is None
     for tier in cfg.tiers.values():
         assert "grok" not in tier.reviewers
