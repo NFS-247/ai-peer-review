@@ -172,11 +172,11 @@ def test_high_stakes_head_lock_empty_by_default_no_auto_escalation():
     assert d.trigger == EscalationTrigger.NONE
 
 
-def test_high_stakes_first_dissent_is_not_escalated():
-    # New model: mid-iteration reviewer dissent is owned by the dev agent, NOT the
-    # operator. A high-stakes round-1 dissent (no head-lock path) must stay silent
-    # — the panel keeps iterating; the operator is pinged only on convergence, a
-    # genuine stall (hard cap), or an explicit raise-hand.
+def test_high_stakes_first_dissent_defers_as_stall():
+    # Mid-iteration reviewer dissent is owned by the dev agent: a high-stakes
+    # round-1 dissent (no head-lock path) yields a DEFERRED stall escalation —
+    # cooldown-gated, so it does NOT ping while the panel iterates; it fires only
+    # once the change goes quiet past the cooldown (see the orchestrator tests).
     d = decide_escalation(
         tier="high_stakes",
         round_=1,
@@ -192,12 +192,16 @@ def test_high_stakes_first_dissent_is_not_escalated():
         api_outage_minutes=0,
         ci_failure_count_after_fix_attempts=0,
     )
-    assert d.trigger == EscalationTrigger.NONE
+    assert d.trigger == EscalationTrigger.DISAGREEMENT_STALLED
+    assert should_defer_escalation(           # deferred -> no ping while iterating
+        trigger=d.trigger, cooldown_minutes=10, converged=False
+    ) is True
 
 
-def test_routine_dissent_at_budget_is_not_escalated():
-    # The soft round budget no longer escalates on its own — dissent past it is
-    # still the dev agent's job, up to the HARD round cap backstop.
+def test_routine_dissent_defers_as_stall():
+    # The soft round budget never escalates on its own; a dissent past it now
+    # yields a DEFERRED stall escalation (fires only once quiet) — not an immediate
+    # ping, and not permanent silence.
     d = decide_escalation(
         tier="routine",
         round_=3,
@@ -210,7 +214,10 @@ def test_routine_dissent_at_budget_is_not_escalated():
         api_outage_minutes=0,
         ci_failure_count_after_fix_attempts=0,
     )
-    assert d.trigger == EscalationTrigger.NONE
+    assert d.trigger == EscalationTrigger.DISAGREEMENT_STALLED
+    assert should_defer_escalation(
+        trigger=d.trigger, cooldown_minutes=10, converged=False
+    ) is True
 
 
 def test_suspicious_unanimous_high_stakes_round_one():
@@ -327,3 +334,58 @@ def test_should_defer_escalation_only_while_iterating():
     ):
         assert should_defer_escalation(trigger=t, cooldown_minutes=10, converged=False) is True
         assert should_defer_escalation(trigger=t, cooldown_minutes=10, converged=True) is False
+
+
+def test_head_lock_dissent_prefers_high_stakes_auto_over_stall():
+    # A head-lock PR with a dissent escalates as HIGH_STAKES_AUTO (operator sign-off
+    # required) — checked BEFORE the stalled-disagreement path, so the more specific
+    # trigger wins.
+    d = decide_escalation(
+        tier="high_stakes", round_=1, round_budget=2, max_review_rounds=6,
+        convergence=_dissenting_state(required=("claude", "gpt", "gemini"),
+                                      dissenters=("gpt",)),
+        changed_files=["backend/app/broker.py"],
+        per_pr_cost_usd=0.0, per_pr_cost_ceiling_usd=5.0,
+        api_outage_minutes=0, ci_failure_count_after_fix_attempts=0,
+        head_lock_paths=("backend/app/broker*.py",),
+    )
+    assert d.trigger == EscalationTrigger.HIGH_STAKES_AUTO
+
+
+def test_round_cap_prefers_hard_round_cap_over_stall():
+    # At the hard round cap, a non-converged split is HARD_ROUND_CAP (checked first).
+    d = decide_escalation(
+        tier="routine", round_=6, round_budget=3, max_review_rounds=6,
+        convergence=_dissenting_state(), changed_files=["README.md"],
+        per_pr_cost_usd=0.0, per_pr_cost_ceiling_usd=5.0,
+        api_outage_minutes=0, ci_failure_count_after_fix_attempts=0,
+    )
+    assert d.trigger == EscalationTrigger.HARD_ROUND_CAP
+
+
+def test_stalled_disagreement_is_a_deferred_disagreement_trigger():
+    # DISAGREEMENT_STALLED routes to the disagreement Chat card (split + Approve-
+    # override / Send-back / Block) and is cooldown-gated (deferred until quiet).
+    from scripts.dispatcher.escalation import (
+        DISAGREEMENT_TRIGGERS, COOLDOWN_GATED_TRIGGERS,
+    )
+    assert EscalationTrigger.DISAGREEMENT_STALLED in DISAGREEMENT_TRIGGERS
+    assert EscalationTrigger.DISAGREEMENT_STALLED in COOLDOWN_GATED_TRIGGERS
+
+
+def test_missing_reviewer_is_not_a_stall():
+    # A reviewer that never reported (non_approving_from empty) is NOT a stall — it's
+    # transient or already REQUIRED_REVIEWER_UNAVAILABLE. Only a real dissent
+    # (someone requested changes) triggers DISAGREEMENT_STALLED.
+    state = ConvergenceState(
+        converged=False, reason="missing_verdicts",
+        required_reviewers=("claude", "gpt"), received_from=("claude",),
+        missing_from=("gpt",), stale_from=(), non_approving_from=(),
+    )
+    d = decide_escalation(
+        tier="routine", round_=2, round_budget=3, max_review_rounds=6,
+        convergence=state, changed_files=["README.md"],
+        per_pr_cost_usd=0.0, per_pr_cost_ceiling_usd=5.0,
+        api_outage_minutes=0, ci_failure_count_after_fix_attempts=0,
+    )
+    assert d.trigger == EscalationTrigger.NONE
