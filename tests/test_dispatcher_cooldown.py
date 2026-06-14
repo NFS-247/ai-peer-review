@@ -558,3 +558,50 @@ def test_update_branch_shortcut_idempotent_across_reruns(monkeypatch):
 
     assert api.reviews.count((101, "APPROVE")) == 1        # exactly once
     assert len(api.comments.get(101, [])) == 1             # and still no new comments
+
+
+def test_ready_card_repings_after_new_commit_clears_stale_ready(monkeypatch):
+    # nfs-central #119: a PR marked ready on a prior head keeps converging after
+    # new commits, but the ready label was STICKY, so _mark_ready_and_notify
+    # deduped and the "ready for merge" card never re-fired. A real round must
+    # CLEAR the stale ready label so the re-convergence pings the operator again.
+    api = FakeAPI(files=["README.md"])              # routine tier, claude-only panel
+    cfg = _cfg(webhook="https://chat.googleapis.com/v1/spaces/x/messages?key=k")
+    api.add_labels(101, [label_state.LABEL_READY])  # ready from an earlier head
+    cards = []
+    monkeypatch.setattr(M, "send_chat_message", lambda url, card: cards.append(card))
+    monkeypatch.setattr(M, "_build_client", lambda r, c: ApproveClient(r))
+    _monotonic_verdict_clock(monkeypatch)
+
+    M._run_review_round(cfg=cfg, api=api, pr_number=101)
+
+    assert cards, "a fresh ready-for-merge Chat card must fire on re-convergence"
+    assert label_state.LABEL_READY in api.labels.get(101, [])   # re-marked ready
+
+
+def test_update_branch_reaffirm_keeps_ready_and_does_not_reping(monkeypatch):
+    # Guard: the same-diff update-branch shortcut is NOT a re-review. It returns
+    # before the ready-clear, so LABEL_READY stays and no fresh ready card fires
+    # (the prior sign-off still stands; only the base was merged in).
+    from scripts.dispatcher.verdict import (
+        build_verdict, compute_diff_sha256, compute_verdict_signature,
+    )
+    api = FakeAPI(files=["README.md"])
+    cfg = _cfg(webhook="https://chat.googleapis.com/v1/spaces/x/messages?key=k")
+    diff_sha = compute_diff_sha256(api.get_pr_diff(101))
+    v = build_verdict(reviewer="claude", verdict="approve", pr_number=101,
+                      head_sha="oldhead0", diff_sha256=diff_sha, tier="routine", round_=1)
+    sig = compute_verdict_signature(v, "sek")
+    api.comments[101] = [f"**Review from `claude`**\n\nok\n\n{v.to_yaml_block(signature=sig)}\n"]
+    api.add_labels(101, [label_state.LABEL_READY])
+    cards = []
+    monkeypatch.setattr(M, "send_chat_message", lambda url, card: cards.append(card))
+
+    def _boom(r, c):
+        raise AssertionError("update-branch reaffirm must not re-review")
+    monkeypatch.setattr(M, "_build_client", _boom)
+
+    M._run_review_round(cfg=cfg, api=api, pr_number=101)
+
+    assert label_state.LABEL_READY in api.labels.get(101, [])   # still ready
+    assert cards == []                                          # no fresh ready ping

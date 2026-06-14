@@ -102,6 +102,18 @@ def set_ready(api: GitHubAPI, pr_number: int, existing_labels: list[str]) -> Non
         api.add_labels(pr_number, [LABEL_READY])
 
 
+def clear_ready(api: GitHubAPI, pr_number: int, existing_labels: list[str]) -> None:
+    """Remove the ready-for-merge label.
+
+    Called when a PR that was marked ready is being re-reviewed on new content:
+    the prior convergence is stale, so the PR is NOT ready until it re-converges.
+    Clearing it also un-dedupes the ready notification, so the re-convergence
+    fires a FRESH 'ready for merge' ping (the notify is gated on this label).
+    """
+    if LABEL_READY in existing_labels:
+        api.remove_label(pr_number, LABEL_READY)
+
+
 # ---- Cross-run numeric state via a hidden state comment --------------------
 
 STATE_COMMENT_MARKER = "<!-- tradewatcher-dispatcher-state -->"
@@ -261,6 +273,7 @@ __all__ = [
     "clear_paused",
     "set_escalated",
     "set_ready",
+    "clear_ready",
     "read_cross_run_state",
     "write_cross_run_state",
 ]
