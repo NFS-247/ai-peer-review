@@ -454,6 +454,11 @@ def _send_escalation(
                         cfg.approve_webapp_url, repo=cfg.repo_name,
                         pr_number=pr_number, action="block",
                         signing_secret=cfg.approve_signing_secret)
+                # Pass the tier's required panel so the card can tell a genuinely
+                # unanimous approval (offer one-tap merge) from one with a dissent
+                # or a missing reviewer (withhold it) — same gate as the
+                # disagreement card.
+                tier_cfg = cfg.tiers.get(tier)
                 card = build_escalation_card(
                     project_name=cfg.project_name,
                     pr_number=pr_number,
@@ -462,6 +467,7 @@ def _send_escalation(
                     tier=tier,
                     reason_short=reason_short,
                     reviewer_summaries=reviewer_summaries,
+                    expected_reviewers=tier_cfg.reviewers if tier_cfg else (),
                     approve_url=approve_url,
                     approve_merge_url=approve_merge_url,
                     investigate_url=investigate_url,

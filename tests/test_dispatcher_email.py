@@ -258,7 +258,9 @@ def test_non_budget_escalation_offers_all_one_tap_actions(tmp_path):
             cfg=cfg, api=_FakeAPI(), pr_number=9, pr_url="http://x/9", pr_title="T",
             tier="high_stakes", branch="f/x", head_sha="abc1234",
             reason_short="high-stakes file changed; operator review required", detail="d",
-            reviewer_summaries={"claude": "approve"}, ci_status=CIStatus.SUCCESS,
+            # ALL required reviewers approved -> the full one-tap set incl. merge.
+            reviewer_summaries={"claude": "approve", "gpt": "approve", "gemini": "approve"},
+            ci_status=CIStatus.SUCCESS,
             diff_summary="+1-0", workflow_run_url="http://run",
             # no trigger -> the standard approval card
         )
@@ -557,3 +559,32 @@ def test_hard_round_cap_missing_reviewer_withholds_merge(tmp_path):
     assert "❔ no clear verdict: gemini" in text
     texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
     assert "🚀 Approve & Merge" not in texts
+
+
+def test_high_stakes_auto_with_dissent_withholds_merge(tmp_path):
+    # End-to-end (#128): a high_stakes_auto (head-lock) escalation where a reviewer
+    # dissents must NOT offer one-tap merge over the dissent — it routes to the
+    # generic card, which is now contested-aware like the disagreement card.
+    from scripts.dispatcher.escalation import EscalationTrigger
+    cfg = _cfg({
+        "GOOGLE_CHAT_WEBHOOK_URL": "https://chat.googleapis.com/v1/spaces/x/messages?key=k",
+        "GITHUB_REPOSITORY": "NFS-247/StockTrader",
+        "APPROVE_WEBAPP_URL": "https://script.google.com/macros/s/AB/exec",
+        "APPROVE_SIGNING_SECRET": "sec",
+    }, tmp_path)
+    sent = {}
+    with mock.patch.object(main, "send_chat_message", lambda url, card: sent.update(card=card)):
+        main._send_escalation(
+            cfg=cfg, api=_FakeAPI(), pr_number=128, pr_url="http://x/128", pr_title="T",
+            tier="high_stakes", branch="f/x", head_sha="abc1234",
+            reason_short="high-stakes file changed; operator review required", detail="d",
+            reviewer_summaries={"claude": "approve (round 2)", "gpt": "request_changes (round 2)",
+                                "gemini": "approve (round 2)"},
+            ci_status=CIStatus.SUCCESS, diff_summary="+1-0", workflow_run_url="http://run",
+            trigger=EscalationTrigger.HIGH_STAKES_AUTO,
+        )
+    sec = sent["card"]["cardsV2"][0]["card"]["sections"][0]
+    texts = [b["text"] for b in sec["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" not in texts          # no one-tap merge over gpt's dissent
+    assert "✅ Approve" in texts                       # operator override still offered
+    assert "✋ want changes: gpt" in sec["widgets"][0]["textParagraph"]["text"]

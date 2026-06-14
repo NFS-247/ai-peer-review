@@ -129,6 +129,50 @@ def _provider_dashboard_buttons(unavailable_reviewers) -> list[dict]:
     return buttons
 
 
+def _bucket_reviewers(
+    reviewer_summaries: Mapping[str, str], expected_reviewers: Sequence[str] = ()
+) -> tuple[dict[str, list[str]], bool, bool, str]:
+    """Bucket reviewers by leading verdict token; shared by both operator cards.
+
+    Returns ``(buckets, contested, all_approved, breakdown)`` where ``buckets`` has
+    approve / block / other lists, ``contested`` is True if anyone wants changes,
+    ``all_approved`` is True only when there is at least one approval AND no dissent
+    AND nobody in the errored/no-verdict/missing bucket (so one-tap merge is only
+    ever offered on a genuinely unanimous panel), and ``breakdown`` is the rendered
+    "✅ approve: … · ✋ want changes: … · ❔ no clear verdict: …" line (already
+    escaped), or "" when there are no reviewers.
+
+    ``expected_reviewers`` is the tier's required panel: anyone on it absent from
+    ``reviewer_summaries`` is seeded as "no verdict", so a reviewer that never
+    reported at all can't vanish and let the card claim unanimity around a hole.
+    """
+    summaries = dict(reviewer_summaries)
+    for name in expected_reviewers:
+        summaries.setdefault(name, "no verdict")
+    buckets: dict[str, list[str]] = {"approve": [], "block": [], "other": []}
+    for name, verdict in summaries.items():
+        # Summaries arrive as "<verdict> (round N)" — match the leading verdict
+        # TOKEN exactly. Substring matching would mis-bucket ("disapprove" contains
+        # "approve"); full-string equality would miss the "(round N)" suffix.
+        token = str(verdict).strip().lower().split(" ", 1)[0]
+        if token == "approve":
+            buckets["approve"].append(name)
+        elif token in ("request_changes", "block"):
+            buckets["block"].append(name)
+        else:
+            buckets["other"].append(name)
+    contested = bool(buckets["block"])
+    all_approved = bool(buckets["approve"]) and not buckets["block"] and not buckets["other"]
+    parts = []
+    if buckets["approve"]:
+        parts.append(f"✅ approve: {_esc(', '.join(sorted(buckets['approve'])))}")
+    if buckets["block"]:
+        parts.append(f"✋ want changes: {_esc(', '.join(sorted(buckets['block'])))}")
+    if buckets["other"]:
+        parts.append(f"❔ no clear verdict: {_esc(', '.join(sorted(buckets['other'])))}")
+    return buckets, contested, all_approved, "  ·  ".join(parts)
+
+
 def build_escalation_card(
     *,
     project_name: str,
@@ -138,6 +182,7 @@ def build_escalation_card(
     tier: str,
     reason_short: str,
     reviewer_summaries: Mapping[str, str],
+    expected_reviewers: Sequence[str] = (),
     approve_url: str = "",
     approve_merge_url: str = "",
     investigate_url: str = "",
@@ -151,11 +196,18 @@ def build_escalation_card(
     The card always carries an "Open PR" button. When ``approve_url`` is set
     (the operator's one-tap web app — see chat-approve/Code.gs) it also carries
     a "✅ Approve" button (posts OPERATOR APPROVE); when ``approve_merge_url`` is
-    set it adds a "🚀 Approve & Merge" button (approve, then merge). When
-    ``investigate_url`` / ``block_url`` are set (signed approve-webapp links) the
-    card also carries "🔄 Send back (1 more round)" and "✋ Block" buttons, so the
-    operator can send a head-lock / gut-check escalation back for another round
-    without opening the PR. All are single-tap, no typing. ``spend_breakdown``
+    set it adds a "🚀 Approve & Merge" button — but ONLY when the panel is
+    genuinely unanimous (every required reviewer approved, nobody dissenting or
+    missing). This card is contested-aware like build_disagreement_card (shared
+    ``_bucket_reviewers``): if a reviewer requested changes it shows WHO is split,
+    frames Approve as an *override*, and withholds one-tap merge so a head-lock /
+    suspicious-unanimous escalation can never one-tap-merge over a dissent. Pass
+    ``expected_reviewers`` (the tier's required panel) so a reviewer that never
+    reported is counted as missing rather than letting the card claim unanimity
+    around a hole. When ``investigate_url`` / ``block_url`` are set (signed
+    approve-webapp links) the card also carries "🔄 Send back (1 more round)" and
+    "✋ Block" buttons, so the operator can send a head-lock / gut-check escalation
+    back for another round without opening the PR. ``spend_breakdown``
     (optional), when given, adds a
     "24h spend" line showing per-model cost so a budget-driven escalation says
     exactly where the money went. ``trigger`` (optional), the EscalationTrigger
@@ -167,24 +219,37 @@ def build_escalation_card(
     Anthropic, gpt→OpenAI) — the action that matches "a reviewer couldn't be
     reached".
     """
-    reviewer_lines = "  •  ".join(
-        f"{name}: {summary}" for name, summary in reviewer_summaries.items()
-    ) or "(no reviewers yet)"
+    # Bucket the panel exactly like the disagreement card (shared helper), so this
+    # card is contested-aware too: a head-lock / suspicious-unanimous escalation
+    # that ALSO carries a reviewer dissent must NOT offer one-tap merge over that
+    # dissent, and should show WHO is split + frame Approve as an override.
+    _, contested, all_approved, breakdown = _bucket_reviewers(
+        reviewer_summaries, expected_reviewers
+    )
+    reviewer_html = (
+        f"{breakdown}<br>" if breakdown else "<b>Reviewers:</b> (no reviewers yet)<br>"
+    )
+    # One-tap merge ONLY when every required reviewer affirmatively approved.
+    show_merge = bool(approve_merge_url) and all_approved
 
-    if approve_url or approve_merge_url or investigate_url or block_url:
+    if approve_url or show_merge or investigate_url or block_url:
         # Only point at the PR for the actions that AREN'T one-tap buttons here.
         extras = []
         if not investigate_url:
             extras.append("INVESTIGATE")
         if not block_url:
             extras.append("BLOCK")
+        tail = ""
         if extras:
+            tail = " or open the PR for <b>" + "</b> / <b>".join(extras) + "</b>"
+        if contested:
+            # A reviewer wants changes — say so, and frame Approve as an override.
             instructions = (
-                "Tap a button below, or open the PR for <b>"
-                + "</b> / <b>".join(extras) + "</b>."
+                "A reviewer requested changes — <b>Approve</b> overrides that and "
+                f"marks it ready (you then merge){tail or ', or open the PR'}."
             )
         else:
-            instructions = "Tap a button below."
+            instructions = f"Tap a button below{tail}."
     else:
         instructions = (
             "Open the PR and reply with one of:<br>"
@@ -207,7 +272,7 @@ def build_escalation_card(
     body = (
         f"<b>{_esc(pr_title)}</b><br>"
         f"{why_html}"
-        f"<b>Reviewers:</b> {_esc(reviewer_lines)}<br>"
+        f"{reviewer_html}"
         f"{spend_html}<br>"
         f"{instructions}"
     )
@@ -217,7 +282,9 @@ def build_escalation_card(
         buttons.append(
             {"text": "✅ Approve", "onClick": {"openLink": {"url": approve_url}}}
         )
-    if approve_merge_url:
+    # Withhold one-tap merge unless every required reviewer approved — never
+    # one-tap-merge over a dissent or an incomplete panel.
+    if show_merge:
         buttons.append(
             {"text": "🚀 Approve & Merge", "onClick": {"openLink": {"url": approve_merge_url}}}
         )
@@ -476,41 +543,13 @@ def build_disagreement_card(
     links) become one-tap buttons when set; otherwise the card falls back to the
     typed-OPERATOR-command prose.
     """
-    summaries = dict(reviewer_summaries)
-    for name in expected_reviewers:
-        summaries.setdefault(name, "no verdict")
-    # Bucket reviewers by verdict. A reviewer that errored / only commented / has
-    # no verdict must NOT be shown as "want changes" — on a human-override card,
-    # mislabeling who's blocking drives the wrong decision. Sort each bucket so the
-    # output never depends on the caller's mapping order.
-    buckets: dict[str, list[str]] = {"approve": [], "block": [], "other": []}
-    for name, verdict in summaries.items():
-        # Summaries arrive as "<verdict> (round N)" — match the leading verdict
-        # TOKEN exactly. Substring matching would mis-bucket ("disapprove" contains
-        # "approve"); full-string equality would miss the "(round N)" suffix.
-        token = str(verdict).strip().lower().split(" ", 1)[0]
-        if token == "approve":
-            buckets["approve"].append(name)
-        elif token in ("request_changes", "block"):
-            buckets["block"].append(name)
-        else:
-            buckets["other"].append(name)
-    contested = bool(buckets["block"])  # at least one reviewer wants changes
-    # "All approved" must mean exactly that: at least one approval, no dissent,
-    # AND nobody in the errored/no-verdict/missing bucket. A panel with a hole in
-    # it is not unanimous — claiming so (or offering one-tap merge on it) would
-    # ship a change a required reviewer never actually passed.
-    all_approved = bool(buckets["approve"]) and not buckets["block"] and not buckets["other"]
-
-    parts = []
-    if buckets["approve"]:
-        parts.append(f"✅ approve: {_esc(', '.join(sorted(buckets['approve'])))}")
-    if buckets["block"]:
-        parts.append(f"✋ want changes: {_esc(', '.join(sorted(buckets['block'])))}")
-    if buckets["other"]:
-        parts.append(f"❔ no clear verdict: {_esc(', '.join(sorted(buckets['other'])))}")
+    # Bucket the panel (shared with the generic escalation card via _bucket_reviewers
+    # so the two operator cards can't drift on how a dissent / hole is handled).
+    _, contested, all_approved, breakdown = _bucket_reviewers(
+        reviewer_summaries, expected_reviewers
+    )
     # The blank-line separator lives inside split_html, so there's no stray break.
-    split_html = f"{'  ·  '.join(parts)}<br><br>" if parts else ""
+    split_html = f"{breakdown}<br><br>" if breakdown else ""
 
     if contested:
         lead = f"<b>Reviewers couldn't agree</b> — {_esc(reason_short)}.<br>"
