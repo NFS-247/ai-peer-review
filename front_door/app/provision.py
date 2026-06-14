@@ -22,20 +22,26 @@ from __future__ import annotations
 import json
 import secrets as _secrets
 from dataclasses import dataclass
-from typing import Mapping, Optional, Protocol
+from typing import Mapping, Optional, Protocol, Sequence
 
 
 WORKFLOW_PATH = ".github/workflows/ai-peer-review.yml"
 CONFIG_PATH = ".peer-review.json"
 ENGINE_REF = "v3"
 
-# Actions secrets for the AI model keys a tenant brings (BYOK — they pay the
-# providers directly). Only the ones actually supplied are set.
-MODEL_KEY_SECRETS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY")
-# The default routine/backend panel is claude + gpt, so a repo can't converge
-# without at least these two — require them up front rather than wiring a repo
-# whose reviews would immediately escalate "required reviewer unavailable".
-REQUIRED_KEY_SECRETS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
+# Each provider the panel can use: checkbox id -> (Actions secret name, reviewer
+# name in a tier roster). The UI shows one checkbox per provider; the user picks
+# which to use (BYOK — they pay each provider directly). ONLY the selected ones
+# get a secret AND appear in the rosters, so the engine never requires a model the
+# repo has no key for.
+PROVIDERS: dict = {
+    "anthropic": ("ANTHROPIC_API_KEY", "claude"),
+    "openai": ("OPENAI_API_KEY", "gpt"),
+    "gemini": ("GEMINI_API_KEY", "gemini"),
+    "xai": ("XAI_API_KEY", "grok"),
+}
+# Canonical roster order, independent of the order the keys arrive in.
+PROVIDER_ORDER = ("anthropic", "openai", "gemini", "xai")
 
 # Plain string (no f-string): GitHub Actions ${{ ... }} must stay literal, so the
 # only substitution is the engine ref via the __REF__ sentinel.
@@ -101,6 +107,7 @@ class ProvisionResult:
     owner: str
     repo: str
     created: bool             # True if we created the repo (vs wired an existing one)
+    reviewers: tuple          # the panel chosen, e.g. ("claude", "gemini")
     secrets_set: tuple        # names of the Actions secrets written
 
 
@@ -118,10 +125,18 @@ def caller_workflow_yaml(ref: str = ENGINE_REF) -> str:
     return _WORKFLOW_TEMPLATE.replace("__REF__", ref)
 
 
-def peer_review_config_json(operator_login: str) -> str:
-    """Minimal .peer-review.json: the operator is the connecting user, so the
-    engine honors THEIR approve/block on this repo (and only theirs)."""
-    return json.dumps({"operator_github_login": operator_login}, indent=2) + "\n"
+def peer_review_config_json(operator_login: str, reviewers: Sequence[str]) -> str:
+    """The repo's .peer-review.json: the operator is the connecting user (the
+    engine honors THEIR approve/block, and only theirs), and every tier's roster
+    is exactly the providers they selected — so the panel only ever uses models
+    the repo actually has keys for."""
+    roster = list(reviewers)
+    return json.dumps({
+        "operator_github_login": operator_login,
+        "routine_reviewers": roster,
+        "backend_reviewers": roster,
+        "high_stakes_reviewers": roster,
+    }, indent=2) + "\n"
 
 
 def provision(
@@ -134,47 +149,54 @@ def provision(
     verdict_secret: Optional[str] = None,
     private: bool = True,
 ) -> ProvisionResult:
-    """Make ``owner/repo`` review-ready. Creates the repo if it doesn't exist,
-    commits the workflow + config, and sets the Actions secrets.
+    """Make ``owner/repo`` review-ready from the user's provider selection.
 
-    ``api_keys`` maps secret name -> value (e.g. ANTHROPIC_API_KEY); only non-empty
-    supplied keys are set, but ANTHROPIC_API_KEY + OPENAI_API_KEY are required (the
-    default panel) and a missing one raises ValueError before anything is written.
+    ``api_keys`` maps PROVIDER id (see PROVIDERS: anthropic/openai/gemini/xai) ->
+    that provider's key. The SELECTED providers are those with a non-empty key:
+    only they get an Actions secret AND appear in the tier rosters, so the engine
+    never requires a model the repo has no key for. At least one provider is
+    required (two or more for genuinely adversarial review).
+
+    Secrets are written BEFORE the workflow is committed, so wiring a repo that
+    already has open PRs can't trigger a key-less review run.
     """
     if not owner or not repo:
         raise ValueError("owner and repo are required")
     if not operator_login:
         raise ValueError("operator_login is required (the engine gates writes on it)")
-    keys = {k: (api_keys.get(k) or "").strip() for k in MODEL_KEY_SECRETS}
-    missing = [k for k in REQUIRED_KEY_SECRETS if not keys[k]]
-    if missing:
-        raise ValueError(f"missing required model key(s): {', '.join(missing)}")
+    selected = [p for p in PROVIDER_ORDER if (api_keys.get(p) or "").strip()]
+    if not selected:
+        raise ValueError("select at least one provider with an API key")
+    reviewers = tuple(PROVIDERS[p][1] for p in selected)
 
     created = False
     if not client.repo_exists(owner, repo):
         client.create_repo(owner, repo, private=private)
         created = True
 
-    client.put_file(owner, repo, WORKFLOW_PATH, caller_workflow_yaml(),
-                    "Add AI peer-review workflow")
-    client.put_file(owner, repo, CONFIG_PATH, peer_review_config_json(operator_login),
-                    "Add AI peer-review config")
-
-    set_names: list[str] = []
+    # Secrets FIRST — a repo with existing PRs must never see the workflow before
+    # its keys exist (that would run the panel key-less and escalate).
+    set_names: list[str] = ["DISPATCHER_VERDICT_SECRET"]
     client.set_secret(owner, repo, "DISPATCHER_VERDICT_SECRET",
                       verdict_secret or gen_verdict_secret())
-    set_names.append("DISPATCHER_VERDICT_SECRET")
-    for name in MODEL_KEY_SECRETS:
-        if keys[name]:
-            client.set_secret(owner, repo, name, keys[name])
-            set_names.append(name)
+    for p in selected:
+        secret_name = PROVIDERS[p][0]
+        client.set_secret(owner, repo, secret_name, api_keys[p].strip())
+        set_names.append(secret_name)
+
+    # Then the workflow + the roster-matched config.
+    client.put_file(owner, repo, WORKFLOW_PATH, caller_workflow_yaml(),
+                    "Add AI peer-review workflow")
+    client.put_file(owner, repo, CONFIG_PATH,
+                    peer_review_config_json(operator_login, reviewers),
+                    "Add AI peer-review config")
 
     return ProvisionResult(owner=owner, repo=repo, created=created,
-                           secrets_set=tuple(set_names))
+                           reviewers=reviewers, secrets_set=tuple(set_names))
 
 
 __all__ = [
     "ProvisioningClient", "ProvisionResult", "provision",
     "gen_verdict_secret", "caller_workflow_yaml", "peer_review_config_json",
-    "WORKFLOW_PATH", "CONFIG_PATH", "ENGINE_REF",
+    "PROVIDERS", "PROVIDER_ORDER", "WORKFLOW_PATH", "CONFIG_PATH", "ENGINE_REF",
 ]
