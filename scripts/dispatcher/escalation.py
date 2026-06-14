@@ -28,6 +28,9 @@ class EscalationTrigger(str, Enum):
     CI_PERSISTENT_FAILURE = "ci_persistent_failure"
     HIGH_STAKES_AUTO = "high_stakes_auto"
     HEAD_LOCK_FILES = "head_lock_files"
+    # Reviewers split (a dissent) and the change has gone quiet — no new commit for
+    # the cooldown window, so it's stalled rather than actively iterating.
+    DISAGREEMENT_STALLED = "disagreement_stalled"
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,7 @@ COOLDOWN_GATED_TRIGGERS = frozenset({
     EscalationTrigger.CI_PERSISTENT_FAILURE,
     EscalationTrigger.HIGH_STAKES_AUTO,
     EscalationTrigger.SUSPICIOUS_UNANIMOUS,
+    EscalationTrigger.DISAGREEMENT_STALLED,
 })
 
 
@@ -86,6 +90,7 @@ DISAGREEMENT_TRIGGERS = frozenset({
     EscalationTrigger.DISAGREEMENT_AFTER_BUDGET,
     EscalationTrigger.HIGH_STAKES_FIRST_DISSENT,
     EscalationTrigger.COST_SPIKE,
+    EscalationTrigger.DISAGREEMENT_STALLED,
 })
 
 
@@ -209,19 +214,35 @@ def decide_escalation(
                    "before merge, regardless of AI convergence.",
         )
 
-    # Reviewer DISSENT mid-iteration is deliberately NOT escalated. The dev agent
-    # owns the loop — it reads the requested changes, pushes fixes, and re-runs the
-    # panel — so pinging the operator every time a reviewer asks for changes (on the
-    # first high-stakes round, or once past the soft round budget) just buzzes the
-    # phone while the agents are doing their job. The operator is pinged only when a
-    # decision is actually theirs:
-    #   • the panel converged and it's ready / needs sign-off (handled on the
-    #     convergence path and HIGH_STAKES_AUTO above),
-    #   • the loop genuinely can't progress — the HARD_ROUND_CAP backstop above, or
-    #   • the dev agent explicitly raises a hand (the OPERATOR-relay path).
-    # HIGH_STAKES_FIRST_DISSENT / DISAGREEMENT_AFTER_BUDGET remain defined (persisted
-    # deferred state and older consumer pins can still carry them) but are no longer
-    # produced here.
+    # Reviewer DISSENT is owned by the dev agent WHILE IT IS ITERATING — the engine
+    # never pings the operator the instant a reviewer asks for changes (that would
+    # buzz the phone mid-fix). But a split panel that has gone QUIET is a genuine
+    # stuck state the operator must break, so it escalates via DISAGREEMENT_STALLED.
+    # That trigger is COOLDOWN-GATED: the orchestrator DEFERS it and only fires once
+    # no new commit has landed for the cooldown window (a fresh commit supersedes and
+    # re-arms it). So "quiet while iterating" is preserved, yet a split PR that
+    # everyone walked away from — green CI, no head-lock, not yet at the round cap —
+    # no longer sits silently forever. Converged / head-lock / round-cap / cost /
+    # infra are all handled above and take precedence.
+    #
+    # ``non_approving_from`` is non-empty only when every required reviewer reported
+    # AND at least one dissented (a missing reviewer yields ``missing_from`` instead,
+    # which is transient or already escalated as REQUIRED_REVIEWER_UNAVAILABLE), so
+    # this fires on a real split, not a half-reported round.
+    if not convergence.converged and convergence.non_approving_from:
+        blockers = ", ".join(sorted(convergence.non_approving_from))
+        return EscalationDecision(
+            trigger=EscalationTrigger.DISAGREEMENT_STALLED,
+            reason_short="reviewers split and the change has gone quiet",
+            detail=(
+                f"The review panel is split — {blockers} requested changes — and no "
+                f"new commit has landed since, so the change looks stalled rather "
+                f"than actively iterating. Your call: approve over the dissent, send "
+                f"it back for another round, or block it."
+            ),
+        )
+    # (HIGH_STAKES_FIRST_DISSENT / DISAGREEMENT_AFTER_BUDGET remain defined for
+    # persisted deferred state and older consumer pins, but are no longer produced.)
 
     if (
         tier == "high_stakes"

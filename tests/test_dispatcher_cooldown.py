@@ -239,11 +239,13 @@ def _clock(monkeypatch, holder):
     monkeypatch.setattr(M, "_now_ts", lambda: holder["t"])
 
 
-def test_plain_dissent_stays_silent(monkeypatch):
-    # New model: an unknown path -> high_stakes tier; a single reviewer requests
-    # changes on round 1. Pre-Cut-1 this pinged immediately; under Cut-1 it
-    # deferred (HIGH_STAKES_FIRST_DISSENT). NOW plain dissent is suppressed
-    # entirely — the dev agent owns iteration — so nothing is pinged OR pending.
+def test_plain_dissent_defers_no_immediate_ping(monkeypatch):
+    # An unknown path -> high_stakes tier; a single reviewer requests changes on
+    # round 1. The dev agent owns iteration, so the operator is NOT pinged now —
+    # but the stall is ARMED as a DEFERRED escalation that fires only once the
+    # change goes quiet past the cooldown (so a walked-away-from split can't sit
+    # silently forever). Pre-Cut-1 this pinged immediately; the interim policy
+    # dropped it entirely; this is the corrected middle.
     api = FakeAPI(files=["weird/unknown.txt"])  # unknown -> high_stakes
     cfg = _cfg(cooldown=10)
     holder = {"t": 1000.0}
@@ -252,13 +254,33 @@ def test_plain_dissent_stays_silent(monkeypatch):
 
     M._run_review_round(cfg=cfg, api=api, pr_number=101)
 
-    # No escalation label, no operator ping/comment — and crucially nothing
-    # queued for a later sweep either.
+    # No immediate ping: no escalation label, no operator card/comment this round.
     assert label_state.LABEL_ESCALATED not in api.labels.get(101, [])
     assert "needs you" not in api.comment_texts(101)
     assert "Escalation" not in api.comment_texts(101)
+    # But the stall IS armed (deferred) so the sweep can fire it once it's quiet.
     cross = label_state.read_cross_run_state(api, 101, "github-actions[bot]", "sek")
-    assert cross.has_pending_escalation() is False
+    assert cross.has_pending_escalation() is True
+
+
+def test_split_and_quiet_pr_fires_via_sweep(monkeypatch):
+    # The stalled-PR detector end to end: a split (dissent) that goes QUIET past the
+    # cooldown gets pinged by the scheduled sweep — closing the "split-and-quiet PR
+    # sits silently forever" gap. A new commit before then would supersede it.
+    api = FakeAPI(files=["weird/unknown.txt"])  # unknown -> high_stakes, one dissent
+    cfg = _cfg(cooldown=10)
+    holder = {"t": 1000.0}
+    _clock(monkeypatch, holder)
+    monkeypatch.setattr(M, "_build_client", lambda r, c: DissentClient(r))
+
+    M._run_review_round(cfg=cfg, api=api, pr_number=101)   # arms the deferred stall
+    assert label_state.LABEL_ESCALATED not in api.labels.get(101, [])  # not yet
+
+    holder["t"] = 1000.0 + 11 * 60          # dev agent has gone quiet > cooldown
+    M._run_cooldown_sweep(cfg=cfg, api=api)  # the periodic cron
+
+    assert label_state.LABEL_ESCALATED in api.labels.get(101, [])      # now fired
+    assert "split" in api.comment_texts(101).lower()                   # disagreement framing
 
 
 # The deferral machinery below is now driven by a still-deferring stuck-signal: a
