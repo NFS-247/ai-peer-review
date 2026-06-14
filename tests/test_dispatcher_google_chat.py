@@ -25,8 +25,9 @@ def test_card_has_header_button_and_reviewers():
 
     widgets = c["sections"][0]["widgets"]
     text = widgets[0]["textParagraph"]["text"]
-    assert "claude: request_changes" in text
-    assert "gpt: approve" in text
+    # Bucketed breakdown (this panel is contested): who approved vs who dissents.
+    assert "✋ want changes: claude" in text
+    assert "✅ approve: gpt" in text
 
     button = widgets[1]["buttonList"]["buttons"][0]
     assert button["text"] == "Open PR #88"
@@ -60,9 +61,12 @@ def test_card_omits_approve_button_without_url():
 
 
 def test_card_has_both_buttons_when_urls_given():
+    # One-tap Approve & Merge shows only when every reviewer approved (nothing to
+    # override) — so give an all-approved panel here.
     card = gc.build_escalation_card(
         project_name="P", pr_number=7, pr_url="http://x/7", pr_title="t",
-        tier="high_stakes", reason_short="r", reviewer_summaries={},
+        tier="high_stakes", reason_short="r",
+        reviewer_summaries={"claude": "approve", "gpt": "approve", "gemini": "approve"},
         approve_url="http://x/exec?action=approve",
         approve_merge_url="http://x/exec?action=approve_merge",
     )
@@ -680,3 +684,53 @@ def test_disagreement_card_fallback_prose_override_only_when_contested():
     )
     text = uncontested["cardsV2"][0]["card"]["sections"][0]["widgets"][0]["textParagraph"]["text"]
     assert "override" not in text
+
+
+def test_escalation_card_withholds_merge_over_a_dissent():
+    # The #128 bug: a head-lock escalation that ALSO carries a reviewer dissent must
+    # NOT offer one-tap Approve & Merge over it — show the split and frame Approve
+    # as an override instead.
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=128, pr_url="http://x/128", pr_title="T",
+        tier="high_stakes", reason_short="high-stakes file changed; operator review required",
+        reviewer_summaries={"claude": "approve (round 2)", "gpt": "request_changes (round 2)"},
+        approve_url="http://a", approve_merge_url="http://m",
+        investigate_url="http://i", block_url="http://b",
+    )
+    sec = card["cardsV2"][0]["card"]["sections"][0]
+    texts = [b["text"] for b in sec["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" not in texts          # the fix: no one-tap merge over a dissent
+    assert "✅ Approve" in texts                       # override stays available
+    assert "🔄 Send back (1 more round)" in texts
+    body = sec["widgets"][0]["textParagraph"]["text"]
+    assert "✋ want changes: gpt" in body              # who's split is surfaced
+    assert "overrides" in body                          # approve framed as override
+
+
+def test_escalation_card_offers_merge_when_all_approved():
+    # Head-lock sign-off where everyone approved: one-tap Approve & Merge is fine.
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=130, pr_url="http://x/130", pr_title="T",
+        tier="high_stakes", reason_short="r",
+        reviewer_summaries={"claude": "approve", "gpt": "approve", "gemini": "approve"},
+        approve_url="http://a", approve_merge_url="http://m",
+    )
+    texts = [b["text"] for b in card["cardsV2"][0]["card"]["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" in texts
+
+
+def test_escalation_card_withholds_merge_on_incomplete_panel():
+    # Nobody dissented, but a required reviewer never reported -> not unanimous, so
+    # no one-tap merge (expected_reviewers reveals the hole), same as the
+    # disagreement card.
+    card = gc.build_escalation_card(
+        project_name="P", pr_number=131, pr_url="http://x/131", pr_title="T",
+        tier="high_stakes", reason_short="r",
+        reviewer_summaries={"claude": "approve", "gpt": "approve"},
+        expected_reviewers=("claude", "gpt", "gemini"),
+        approve_url="http://a", approve_merge_url="http://m",
+    )
+    c = card["cardsV2"][0]["card"]
+    texts = [b["text"] for b in c["sections"][0]["widgets"][1]["buttonList"]["buttons"]]
+    assert "🚀 Approve & Merge" not in texts
+    assert "❔ no clear verdict: gemini" in c["sections"][0]["widgets"][0]["textParagraph"]["text"]
