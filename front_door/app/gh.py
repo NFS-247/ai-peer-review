@@ -18,7 +18,15 @@ from typing import Any, Optional
 
 
 class GitHubError(RuntimeError):
-    pass
+    """A failed GitHub call. ``status`` is the HTTP status code when the failure
+    was an HTTP error response (None for transport/URL errors), so callers can
+    branch on it explicitly instead of string-matching the message — e.g.
+    distinguishing a 404 (not found) from a 403 (no access) on a provisioning
+    path where that difference is load-bearing."""
+
+    def __init__(self, message: str, *, status: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class GitHub:
@@ -42,7 +50,9 @@ class GitHub:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace") if exc.fp else ""
-            raise GitHubError(f"GitHub {method} {path} -> HTTP {exc.code}: {detail[:300]}") from exc
+            raise GitHubError(
+                f"GitHub {method} {path} -> HTTP {exc.code}: {detail[:300]}",
+                status=exc.code) from exc
         except urllib.error.URLError as exc:
             raise GitHubError(f"GitHub {method} {path} failed: {exc.reason}") from exc
         return json.loads(raw) if raw else None

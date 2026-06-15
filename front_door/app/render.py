@@ -48,9 +48,13 @@ main{max-width:1000px;margin:20px auto;padding:0 16px}
 form.inline{display:inline}button,input[type=text]{font:13px inherit}
 button{background:#1f883d;color:#fff;border:0;border-radius:6px;padding:5px 10px;cursor:pointer}
 button.warn{background:#9a6700}button.danger{background:#cf222e}
-input[type=text]{padding:5px 8px;border:1px solid #d0d7de;border-radius:6px}
+input[type=text],input[type=password]{padding:5px 8px;border:1px solid #d0d7de;border-radius:6px;font:13px inherit}
 .empty{padding:24px;text-align:center;color:#6e7781}
 .note{background:#fff8c5;border:1px solid #d4a72c55;padding:8px 14px;border-radius:6px;margin:12px 0}
+.provs{margin:10px 0}
+.prov{display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid #eaeef2}
+.prov label{min-width:200px;cursor:pointer}
+.prov input[type=password]{flex:1}
 """
 
 
@@ -65,6 +69,7 @@ def _layout(title: str, body: str, *, signed_in: bool = False, refresh: int = 0)
         f"{meta_refresh}<title>{escape(title)}</title><style>{_CSS}</style></head><body>"
         "<header><strong>Front Door</strong>"
         "<a href='/'>Projects</a><a href='/inbox'>Approvals</a>"
+        "<a href='/connect'>Connect a repo</a>"
         "<span style='flex:1'></span>"
         f"{auth}</header>"
         f"<main>{body}</main></body></html>"
@@ -193,4 +198,78 @@ def message_page(title: str, html_body: str, *, signed_in: bool = False) -> str:
                    signed_in=signed_in)
 
 
-__all__ = ["board_page", "inbox_page", "message_page"]
+# Display metadata for the Connect form. The canonical provider ids + order live
+# in provision.PROVIDER_ORDER (one source of truth); these are just the labels.
+_PROVIDER_LABELS = {
+    "anthropic": ("Anthropic", "Claude"),
+    "openai": ("OpenAI", "GPT"),
+    "gemini": ("Google", "Gemini"),
+    "xai": ("xAI", "Grok"),
+}
+
+
+def connect_page(*, login: str, csrf: str, signed_in: bool = True, error: str = "") -> str:
+    """The self-serve onboarding form: pick AI providers (checkboxes) + paste each
+    one's key, name a repo, Connect. The selected providers drive BOTH the secrets
+    set and the reviewer roster (see provision.provision)."""
+    from .provision import PROVIDER_ORDER  # canonical ids/order; avoids drift
+
+    rows = []
+    for pid in PROVIDER_ORDER:
+        vendor, model = _PROVIDER_LABELS.get(pid, (pid, pid))
+        rows.append(
+            "<div class='prov'>"
+            f"<label><input type='checkbox' name='provider_{escape(pid)}' value='1'> "
+            f"<b>{escape(vendor)}</b> <span class='meta'>adds {escape(model)}</span></label>"
+            f"<input type='password' name='key_{escape(pid)}' "
+            f"placeholder='{escape(vendor)} API key' autocomplete='off'>"
+            "</div>"
+        )
+    err = (f"<div class='note' style='background:#ffebe9;border-color:#cf222e55'>"
+           f"{escape(error)}</div>") if error else ""
+    body = (
+        "<div class='card'><div style='padding:16px'>"
+        "<div class='title' style='font-size:16px;margin-bottom:6px'>Connect a repository</div>"
+        f"<p class='meta'>Signed in as <b>{escape(login)}</b>. Check the AI providers you want on "
+        "your review panel and paste each one's key. Keys are encrypted and stored as that repo's "
+        "GitHub Actions secrets — you pay each provider directly. Two or more providers gives you "
+        "genuinely adversarial review; one is allowed.</p>"
+        f"{err}"
+        "<form method='post' action='/connect'>"
+        f"<input type='hidden' name='csrf' value='{escape(csrf)}'>"
+        "<p><label>Repository "
+        "<input type='text' name='repo' placeholder='my-idea or my-org/my-idea' required>"
+        "</label> &nbsp; "
+        "<label class='meta'><input type='checkbox' name='private' value='1' checked> private</label>"
+        "<br><span class='meta'>Just a name creates it under your account; "
+        "<code>owner/name</code> uses an org you admin. An existing repo is wired in place.</span>"
+        "</p>"
+        f"<div class='provs'>{''.join(rows)}</div>"
+        "<p><button type='submit'>Connect repository</button></p>"
+        "</form>"
+        "<p class='meta'>Creates the repo if it doesn't exist, commits the review workflow "
+        "(pinned to <code>@v3</code>) and a config naming you as operator, and sets the keys as "
+        "secrets. New pull requests are then reviewed automatically and appear on your board.</p>"
+        "</div></div>"
+    )
+    return _layout("Connect", body, signed_in=signed_in)
+
+
+def connect_success(*, owner: str, repo: str, panel: "Iterable[str]", signed_in: bool = True) -> str:
+    """Post-provision confirmation: the repo is wired and which panel it got."""
+    full = f"{owner}/{repo}"
+    repo_url = f"https://github.com/{escape(full)}"
+    panel_str = ", ".join(escape(str(p)) for p in panel)
+    body = (
+        f"<div class='title' style='font-size:16px'>✅ {escape(full)} is wired for AI review</div>"
+        f"<p>Review panel: <b>{panel_str}</b>.</p>"
+        "<p class='meta'>Open a pull request on this repo and the panel reviews it automatically; "
+        "it'll appear on your board, and you approve or block from the inbox.</p>"
+        f"<p><a href='{repo_url}'>Open the repository</a> &nbsp;·&nbsp; "
+        "<a href='/'>Your board</a> &nbsp;·&nbsp; <a href='/connect'>Connect another</a></p>"
+    )
+    return _layout("Connected", f"<div class='card'><div style='padding:16px'>{body}</div></div>",
+                   signed_in=signed_in)
+
+
+__all__ = ["board_page", "inbox_page", "message_page", "connect_page", "connect_success"]

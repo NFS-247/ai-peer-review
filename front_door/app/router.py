@@ -17,10 +17,13 @@ from __future__ import annotations
 import secrets
 import sys
 from dataclasses import dataclass, field
+from html import escape
 from typing import Callable, Optional
 
 from . import render
 from .commands import VALID_ACTIONS, command_body
+from .gh import GitHubError
+from .provision import PROVIDER_ORDER, provision
 from .sessions import SID_COOKIE, STATE_COOKIE
 from .viewmodels import (
     GLOBAL_SPEND_MARKER,
@@ -48,6 +51,7 @@ class Deps:
     now_ts: float
     sessions: object = None            # SessionStore (None -> dev/no-session mode)
     oauth: object = None               # OAuth (None/unconfigured -> dev mode)
+    provisioning_client: Callable = None  # (cookies) -> ProvisioningClient | None
 
 
 # ---- cookies ----------------------------------------------------------------
@@ -169,6 +173,12 @@ def route(method: str, path: str, *, cookies: dict, form: dict, deps: Deps,
     if method == "POST" and path == "/action":
         return _handle_action(cookies=cookies, form=form, deps=deps)
 
+    if method == "GET" and path == "/connect":
+        return _handle_connect_form(deps=deps, cookies=cookies)
+
+    if method == "POST" and path == "/connect":
+        return _handle_connect_submit(deps=deps, cookies=cookies, form=form)
+
     return Response(404, render.message_page("Not found", "No such page."))
 
 
@@ -276,6 +286,124 @@ def _handle_action(*, cookies: dict, form: dict, deps: Deps) -> Response:
 
     # Posted as the operator; the engine reacts. Back to the queue.
     return Response(303, "", headers={"Location": "/inbox"})
+
+
+# ---- connect (self-serve provisioning) --------------------------------------
+def _provisioner(deps: Deps, cookies: dict):
+    """The operator's provisioning client (their own token), or None if no
+    identity — provisioning always runs AS the signed-in user, on their repos."""
+    factory = getattr(deps, "provisioning_client", None)
+    return factory(cookies) if factory else None
+
+
+def _handle_connect_form(*, deps: Deps, cookies: dict, error: str = "") -> Response:
+    client = _provisioner(deps, cookies)
+    if client is None:
+        return Response(200, render.message_page(
+            "Connect a repo",
+            "Sign in with GitHub to connect a repository — provisioning runs as "
+            "you, on your own repos. <a href='/login'>Sign in.</a>",
+            signed_in=_signed_in(deps, cookies)))
+    return Response(200, render.connect_page(
+        login=client.login, csrf=_session_csrf(deps, cookies) or "",
+        signed_in=_signed_in(deps, cookies), error=error))
+
+
+def _handle_connect_submit(*, deps: Deps, cookies: dict, form: dict) -> Response:
+    client = _provisioner(deps, cookies)
+    if client is None:
+        return Response(401, render.message_page(
+            "Sign in required",
+            "Sign in with GitHub to connect a repository. <a href='/login'>Sign in.</a>",
+            signed_in=_signed_in(deps, cookies)))
+    if not _csrf_ok(deps, cookies, form):
+        return Response(403, render.message_page("Blocked", "Invalid CSRF token; reload and retry."))
+
+    owner, name = _parse_repo(form.get("repo") or "", default_owner=client.login)
+    if not name:
+        return _handle_connect_form(
+            deps=deps, cookies=cookies,
+            error="Enter a repository as 'name' or 'owner/name'.")
+    private = bool(form.get("private"))
+
+    # A provider counts as selected when its checkbox is checked; a checked box
+    # with a blank key is a user error we surface rather than silently drop.
+    api_keys: dict = {}
+    missing: list = []
+    for pid in PROVIDER_ORDER:
+        if not form.get(f"provider_{pid}"):
+            continue
+        key = (form.get(f"key_{pid}") or "").strip()
+        if key:
+            api_keys[pid] = key
+        else:
+            missing.append(pid)
+    if missing:
+        return _handle_connect_form(
+            deps=deps, cookies=cookies,
+            error=f"Checked {', '.join(missing)} but pasted no key for it.")
+
+    # The operator is always the signed-in user (the engine gates their commands
+    # on their login), even when the repo lives under an org they admin.
+    try:
+        result = provision(client, owner=owner, repo=name,
+                           operator_login=client.login, api_keys=api_keys, private=private)
+    except ValueError as exc:
+        # Bad input (e.g. no provider selected) — re-show the form with the reason.
+        return _handle_connect_form(deps=deps, cookies=cookies, error=str(exc))
+    except GitHubError as exc:
+        # Provisioning failed at GitHub, or locally (e.g. PyNaCl missing). Surface
+        # an actionable message; the repo may be half-wired (retry is safe).
+        return Response(502, render.message_page(
+            "Could not finish connecting", _provision_error_html(exc),
+            signed_in=_signed_in(deps, cookies)))
+    except Exception as exc:  # noqa: BLE001 - unexpected; sanitized, never 500 silently
+        return Response(502, render.message_page(
+            "Could not connect",
+            f"Provisioning failed unexpectedly ({escape(type(exc).__name__)}). The "
+            "repo may be partially set up — re-submitting Connect is safe; it skips "
+            "what's already done.", signed_in=_signed_in(deps, cookies)))
+
+    return Response(200, render.connect_success(
+        owner=owner, repo=name, panel=result.reviewers,
+        signed_in=_signed_in(deps, cookies)))
+
+
+def _parse_repo(raw: str, *, default_owner: str) -> "tuple[str, str]":
+    """``(owner, name)`` from ``name`` (owner defaults to the signed-in user) or
+    ``owner/name`` (an org the user admins). ``('', '')`` if malformed — empty, or
+    more than one path segment."""
+    raw = (raw or "").strip().strip("/")
+    if not raw:
+        return ("", "")
+    if "/" in raw:
+        owner, _, name = raw.partition("/")
+        owner, name = owner.strip(), name.strip()
+        if not owner or not name or "/" in name:
+            return ("", "")
+        return (owner, name)
+    return (default_owner, raw)
+
+
+def _provision_error_html(exc: GitHubError) -> str:
+    """User-facing message for a provisioning failure. A status-less GitHubError is
+    a LOCAL/config failure (e.g. PyNaCl missing) whose message is our own safe,
+    actionable string — surface it. A status-bearing one is a GitHub API failure —
+    show a curated line by code, never the raw response body (which could echo
+    request data). Always note the repo may be partial and retry is safe."""
+    if exc.status is None:
+        head = escape(str(exc))
+    else:
+        head = {
+            401: "GitHub rejected your sign-in — sign in again.",
+            403: "GitHub denied the request — your account may lack admin access to "
+                 "create this repo or set its secrets.",
+            404: "GitHub couldn't find that — check the owner / repository name.",
+            422: "GitHub rejected the request — the repository name may be invalid "
+                 "or already taken.",
+        }.get(exc.status, f"GitHub returned HTTP {exc.status}.")
+    return (f"{head}<br><span class='meta'>The repo may be partially set up — "
+            "re-submitting Connect is safe; it skips what's already done.</span>")
 
 
 __all__ = ["Response", "Deps", "route"]

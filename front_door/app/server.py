@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .gh import GitHub
 from .oauth import OAuth
+from .provision_client import GitHubProvisioner
 from .router import Deps, route
 from .sessions import SID_COOKIE, SessionStore
 
@@ -41,6 +42,30 @@ def _operator_client_factory(cfg, sessions):
     return factory
 
 
+def _provisioning_client_factory(cfg, sessions):
+    """Return ``(cookies) -> GitHubProvisioner | None``.
+
+    Provisioning runs AS the signed-in user — same token source as operator
+    writes (OAuth session, or the dev token for local dev). It needs the token's
+    own login (one ``/user`` call) to own the new repo and name the operator;
+    returns None when there's no usable identity or the token is bad, so the
+    router prompts a sign-in instead of half-provisioning.
+    """
+    def factory(cookies: dict):
+        token = sessions.token_for(cookies.get(SID_COOKIE)) if sessions is not None else None
+        if not token and cfg.dev_operator_token and not cfg.oauth_enabled():
+            token = cfg.dev_operator_token
+        if not token:
+            return None
+        gh = GitHub(token, api_base=cfg.api_base)
+        try:
+            login = gh.authenticated_login()
+        except Exception:  # noqa: BLE001 - bad/expired token -> no identity
+            return None
+        return GitHubProvisioner(gh, authed_login=login) if login else None
+    return factory
+
+
 def make_deps(cfg, *, now_ts=None, sessions=None, oauth=None) -> Deps:
     return Deps(
         read=GitHub(cfg.read_token, api_base=cfg.api_base),
@@ -49,6 +74,7 @@ def make_deps(cfg, *, now_ts=None, sessions=None, oauth=None) -> Deps:
         now_ts=now_ts if now_ts is not None else time.time(),
         sessions=sessions,
         oauth=oauth,
+        provisioning_client=_provisioning_client_factory(cfg, sessions),
     )
 
 
