@@ -17,10 +17,12 @@ from __future__ import annotations
 import secrets
 import sys
 from dataclasses import dataclass, field
+from html import escape
 from typing import Callable, Optional
 
 from . import render
 from .commands import VALID_ACTIONS, command_body
+from .gh import GitHubError
 from .provision import PROVIDER_ORDER, provision
 from .sessions import SID_COOKIE, STATE_COOKIE
 from .viewmodels import (
@@ -317,9 +319,11 @@ def _handle_connect_submit(*, deps: Deps, cookies: dict, form: dict) -> Response
     if not _csrf_ok(deps, cookies, form):
         return Response(403, render.message_page("Blocked", "Invalid CSRF token; reload and retry."))
 
-    repo = (form.get("repo") or "").strip()
-    if not repo:
-        return _handle_connect_form(deps=deps, cookies=cookies, error="Enter a repository name.")
+    owner, name = _parse_repo(form.get("repo") or "", default_owner=client.login)
+    if not name:
+        return _handle_connect_form(
+            deps=deps, cookies=cookies,
+            error="Enter a repository as 'name' or 'owner/name'.")
     private = bool(form.get("private"))
 
     # A provider counts as selected when its checkbox is checked; a checked box
@@ -339,21 +343,67 @@ def _handle_connect_submit(*, deps: Deps, cookies: dict, form: dict) -> Response
             deps=deps, cookies=cookies,
             error=f"Checked {', '.join(missing)} but pasted no key for it.")
 
+    # The operator is always the signed-in user (the engine gates their commands
+    # on their login), even when the repo lives under an org they admin.
     try:
-        result = provision(client, owner=client.login, repo=repo,
+        result = provision(client, owner=owner, repo=name,
                            operator_login=client.login, api_keys=api_keys, private=private)
     except ValueError as exc:
-        # e.g. no provider selected at all — re-show the form with the reason.
+        # Bad input (e.g. no provider selected) — re-show the form with the reason.
         return _handle_connect_form(deps=deps, cookies=cookies, error=str(exc))
-    except Exception as exc:  # noqa: BLE001 - surface the failure, never 500 silently
+    except GitHubError as exc:
+        # Provisioning failed at GitHub, or locally (e.g. PyNaCl missing). Surface
+        # an actionable message; the repo may be half-wired (retry is safe).
+        return Response(502, render.message_page(
+            "Could not finish connecting", _provision_error_html(exc),
+            signed_in=_signed_in(deps, cookies)))
+    except Exception as exc:  # noqa: BLE001 - unexpected; sanitized, never 500 silently
         return Response(502, render.message_page(
             "Could not connect",
-            f"GitHub rejected provisioning: {type(exc).__name__}. Check your access "
-            "to the repo and try again.", signed_in=_signed_in(deps, cookies)))
+            f"Provisioning failed unexpectedly ({escape(type(exc).__name__)}). The "
+            "repo may be partially set up — re-submitting Connect is safe; it skips "
+            "what's already done.", signed_in=_signed_in(deps, cookies)))
 
     return Response(200, render.connect_success(
-        login=client.login, repo=repo, panel=result.reviewers,
+        owner=owner, repo=name, panel=result.reviewers,
         signed_in=_signed_in(deps, cookies)))
+
+
+def _parse_repo(raw: str, *, default_owner: str) -> "tuple[str, str]":
+    """``(owner, name)`` from ``name`` (owner defaults to the signed-in user) or
+    ``owner/name`` (an org the user admins). ``('', '')`` if malformed — empty, or
+    more than one path segment."""
+    raw = (raw or "").strip().strip("/")
+    if not raw:
+        return ("", "")
+    if "/" in raw:
+        owner, _, name = raw.partition("/")
+        owner, name = owner.strip(), name.strip()
+        if not owner or not name or "/" in name:
+            return ("", "")
+        return (owner, name)
+    return (default_owner, raw)
+
+
+def _provision_error_html(exc: GitHubError) -> str:
+    """User-facing message for a provisioning failure. A status-less GitHubError is
+    a LOCAL/config failure (e.g. PyNaCl missing) whose message is our own safe,
+    actionable string — surface it. A status-bearing one is a GitHub API failure —
+    show a curated line by code, never the raw response body (which could echo
+    request data). Always note the repo may be partial and retry is safe."""
+    if exc.status is None:
+        head = escape(str(exc))
+    else:
+        head = {
+            401: "GitHub rejected your sign-in — sign in again.",
+            403: "GitHub denied the request — your account may lack admin access to "
+                 "create this repo or set its secrets.",
+            404: "GitHub couldn't find that — check the owner / repository name.",
+            422: "GitHub rejected the request — the repository name may be invalid "
+                 "or already taken.",
+        }.get(exc.status, f"GitHub returned HTTP {exc.status}.")
+    return (f"{head}<br><span class='meta'>The repo may be partially set up — "
+            "re-submitting Connect is safe; it skips what's already done.</span>")
 
 
 __all__ = ["Response", "Deps", "route"]

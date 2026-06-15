@@ -76,8 +76,11 @@ Requirements for Connect specifically:
   Without it, Connect returns a clear "install PyNaCl" error instead of provisioning.
 
 The user's only steps are the ones you want them to have: make a GitHub account,
-buy their AI keys, sign in, paste the keys. Org-owned repos and connecting a
-pre-existing repo work; creating under the user's own account is the default.
+buy their AI keys, sign in, paste the keys. They type a bare name to create the
+repo under their own account, or `owner/name` to use an org they admin; an
+existing repo is wired in place. If provisioning can't finish (e.g. PyNaCl
+missing, or no admin access), the page says so and the repo is safe to re-submit
+— Connect is idempotent and skips whatever is already done.
 
 ## Notes for scale
 

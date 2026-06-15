@@ -237,9 +237,12 @@ def connect_page(*, login: str, csrf: str, signed_in: bool = True, error: str = 
         f"{err}"
         "<form method='post' action='/connect'>"
         f"<input type='hidden' name='csrf' value='{escape(csrf)}'>"
-        "<p><label>Repository name "
-        "<input type='text' name='repo' placeholder='my-idea' required></label> &nbsp; "
+        "<p><label>Repository "
+        "<input type='text' name='repo' placeholder='my-idea or my-org/my-idea' required>"
+        "</label> &nbsp; "
         "<label class='meta'><input type='checkbox' name='private' value='1' checked> private</label>"
+        "<br><span class='meta'>Just a name creates it under your account; "
+        "<code>owner/name</code> uses an org you admin. An existing repo is wired in place.</span>"
         "</p>"
         f"<div class='provs'>{''.join(rows)}</div>"
         "<p><button type='submit'>Connect repository</button></p>"
@@ -252,9 +255,9 @@ def connect_page(*, login: str, csrf: str, signed_in: bool = True, error: str = 
     return _layout("Connect", body, signed_in=signed_in)
 
 
-def connect_success(*, login: str, repo: str, panel: "Iterable[str]", signed_in: bool = True) -> str:
+def connect_success(*, owner: str, repo: str, panel: "Iterable[str]", signed_in: bool = True) -> str:
     """Post-provision confirmation: the repo is wired and which panel it got."""
-    full = f"{login}/{repo}"
+    full = f"{owner}/{repo}"
     repo_url = f"https://github.com/{escape(full)}"
     panel_str = ", ".join(escape(str(p)) for p in panel)
     body = (

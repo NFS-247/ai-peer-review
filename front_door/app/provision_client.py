@@ -67,9 +67,9 @@ class GitHubProvisioner:
             self._gh._request("GET", f"/repos/{owner}/{repo}")
             return True
         except GitHubError as exc:
-            if " 404" in str(exc):       # not found vs a real error (auth, rate)
+            if exc.status == 404:        # truly absent vs a real error (403 auth, 5xx)
                 return False
-            raise
+            raise                        # don't treat "no access" as "create it"
 
     def create_repo(self, owner: str, repo: str, *, private: bool = True) -> None:
         # auto_init=True gives the repo an initial commit + default branch, so the
@@ -94,10 +94,16 @@ class GitHubProvisioner:
     def set_secret(self, owner: str, repo: str, name: str, value: str) -> None:
         key = self._gh._request(
             "GET", f"/repos/{owner}/{repo}/actions/secrets/public-key") or {}
-        encrypted = seal_secret(key.get("key", ""), value)
+        if not key.get("key") or not key.get("key_id"):
+            # Fail loudly rather than sealing to an empty key / PUTting an empty
+            # key_id, which GitHub would reject with an opaque error.
+            raise GitHubError(
+                f"GitHub returned no Actions public key for {owner}/{repo}; "
+                "cannot encrypt the secret.")
+        encrypted = seal_secret(key["key"], value)
         self._gh._request(
             "PUT", f"/repos/{owner}/{repo}/actions/secrets/{name}",
-            {"encrypted_value": encrypted, "key_id": key.get("key_id", "")})
+            {"encrypted_value": encrypted, "key_id": key["key_id"]})
 
     # ---- helpers -----------------------------------------------------------
     def _file_sha(self, owner: str, repo: str, path: str) -> str:
@@ -105,7 +111,7 @@ class GitHubProvisioner:
         try:
             data = self._gh._request("GET", f"/repos/{owner}/{repo}/contents/{path}")
         except GitHubError as exc:
-            if " 404" in str(exc):
+            if exc.status == 404:
                 return ""
             raise
         return (data or {}).get("sha", "") if isinstance(data, dict) else ""

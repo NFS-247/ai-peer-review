@@ -46,10 +46,11 @@ def test_repo_exists_true_on_200():
 
 def test_repo_exists_false_on_404_but_reraises_others():
     gh = FakeGH()
-    gh.responses[("GET", "/repos/alice/r")] = GitHubError("GitHub GET /repos/alice/r -> HTTP 404: x")
+    gh.responses[("GET", "/repos/alice/r")] = GitHubError("not found", status=404)
     assert _prov(gh).repo_exists("alice", "r") is False
 
-    gh.responses[("GET", "/repos/alice/r")] = GitHubError("GitHub GET /repos/alice/r -> HTTP 403: x")
+    # A 403 (no access) must NOT be read as "doesn't exist" -> would try create_repo.
+    gh.responses[("GET", "/repos/alice/r")] = GitHubError("forbidden", status=403)
     with pytest.raises(GitHubError):
         _prov(gh).repo_exists("alice", "r")
 
@@ -72,8 +73,7 @@ def test_create_repo_under_org_uses_org_endpoint():
 # ---- put_file ---------------------------------------------------------------
 def test_put_file_new_file_has_no_sha_and_base64_content():
     gh = FakeGH()
-    gh.responses[("GET", "/repos/alice/r/contents/x.txt")] = GitHubError(
-        "GitHub GET /repos/alice/r/contents/x.txt -> HTTP 404: x")
+    gh.responses[("GET", "/repos/alice/r/contents/x.txt")] = GitHubError("nope", status=404)
     _prov(gh).put_file("alice", "r", "x.txt", "hello", "msg")
     body = gh.last("PUT", "/repos/alice/r/contents/x.txt")
     assert "sha" not in body
@@ -97,6 +97,16 @@ def test_set_secret_fetches_key_seals_and_puts(monkeypatch):
     _prov(gh).set_secret("alice", "r", "ANTHROPIC_API_KEY", "sk-ant")
     body = gh.last("PUT", "/repos/alice/r/actions/secrets/ANTHROPIC_API_KEY")
     assert body == {"encrypted_value": "SEALED(PUBKEY:sk-ant)", "key_id": "kid7"}
+
+
+def test_set_secret_raises_when_public_key_missing(monkeypatch):
+    # An empty/malformed public-key response must fail loudly, not seal to ''.
+    monkeypatch.setattr(PC, "seal_secret", lambda pk, v: "x")
+    gh = FakeGH()
+    gh.responses[("GET", "/repos/alice/r/actions/secrets/public-key")] = {}
+    with pytest.raises(GitHubError):
+        _prov(gh).set_secret("alice", "r", "NAME", "val")
+    assert gh.last("PUT", "/repos/alice/r/actions/secrets/NAME") is None  # nothing PUT
 
 
 def test_seal_secret_without_nacl_raises_actionable_error(monkeypatch):

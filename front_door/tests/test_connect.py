@@ -5,12 +5,14 @@ fake provisioning client, so the route, provider-checkbox parsing, roster/secret
 wiring, CSRF, and the signed-in gate are all covered without GitHub.
 """
 
+import json
 import types
 
 import pytest
 
 from front_door.app import provision as P
 from front_door.app.router import Deps, route
+from front_door.app.sessions import SID_COOKIE
 
 
 class FakeProvisioner:
@@ -39,17 +41,20 @@ class FakeProvisioner:
 
 
 class FakeSessions:
-    """Minimal session layer to drive CSRF/sign-in branches."""
+    """Minimal session layer that, like the real SessionStore, only resolves a
+    csrf/token for the EXACT sid it issued — so 'session present but wrong/no SID
+    cookie' fails closed, matching production."""
 
-    def __init__(self, csrf="good", token="tok"):
+    def __init__(self, csrf="good", token="tok", sid="sid1"):
         self._csrf = csrf
         self._token = token
+        self._sid = sid
 
     def csrf_for(self, sid):
-        return self._csrf
+        return self._csrf if sid == self._sid else None
 
     def token_for(self, sid):
-        return self._token
+        return self._token if sid == self._sid else None
 
 
 def _deps(provisioner=None, *, sessions=None):
@@ -117,12 +122,23 @@ def test_post_connect_creates_repo_as_signed_in_user():
     assert prov.created == [("alice", "fresh", False)]  # 'private' unchecked -> public
 
 
+def test_post_connect_owner_slash_name_targets_an_org():
+    # 'owner/name' provisions under an org the user admins; operator stays the user.
+    prov = FakeProvisioner(login="alice")
+    resp = _post(_deps(prov), {"repo": "acme/idea", "provider_openai": "1", "key_openai": "k"})
+    assert resp.status == 200
+    assert prov.created == [("acme", "idea", False)]
+    cfg = json.loads(prov.files[("acme", "idea", P.CONFIG_PATH)])
+    assert cfg["operator_github_login"] == "alice"
+    assert "acme/idea" in resp.body
+
+
 # ---- POST: validation -------------------------------------------------------
 def test_post_connect_requires_a_repo_name():
     prov = FakeProvisioner()
     resp = _post(_deps(prov), {"provider_openai": "1", "key_openai": "k"})
     assert resp.status == 200
-    assert "repository name" in resp.body.lower()
+    assert "repository" in resp.body.lower()
     assert prov.files == {}  # nothing provisioned
 
 
@@ -150,15 +166,27 @@ def test_post_connect_without_identity_is_401():
 
 def test_post_connect_rejects_bad_csrf_when_session_present():
     prov = FakeProvisioner()
-    deps = _deps(prov, sessions=FakeSessions(csrf="good"))
-    resp = _post(deps, {"repo": "r", "provider_openai": "1", "key_openai": "k", "csrf": "bad"})
+    deps = _deps(prov, sessions=FakeSessions(csrf="good", sid="sid1"))
+    resp = _post(deps, {"repo": "r", "provider_openai": "1", "key_openai": "k", "csrf": "bad"},
+                 cookies={SID_COOKIE: "sid1"})
     assert resp.status == 403
     assert prov.files == {}
 
 
-def test_post_connect_accepts_matching_csrf_when_session_present():
+def test_post_connect_accepts_matching_csrf_with_valid_session_cookie():
     prov = FakeProvisioner()
-    deps = _deps(prov, sessions=FakeSessions(csrf="good"))
-    resp = _post(deps, {"repo": "r", "provider_openai": "1", "key_openai": "k", "csrf": "good"})
+    deps = _deps(prov, sessions=FakeSessions(csrf="good", sid="sid1"))
+    resp = _post(deps, {"repo": "r", "provider_openai": "1", "key_openai": "k", "csrf": "good"},
+                 cookies={SID_COOKIE: "sid1"})
     assert resp.status == 200
     assert ("alice", "r", "OPENAI_API_KEY") in prov.secrets
+
+
+def test_post_connect_fails_closed_when_session_present_but_no_sid_cookie():
+    # Session layer configured but the request carries no valid SID -> csrf_for
+    # returns None -> reject. 'No session' must never be a CSRF bypass.
+    prov = FakeProvisioner()
+    deps = _deps(prov, sessions=FakeSessions(csrf="good", sid="sid1"))
+    resp = _post(deps, {"repo": "r", "provider_openai": "1", "key_openai": "k", "csrf": "good"})
+    assert resp.status == 403
+    assert prov.files == {}
