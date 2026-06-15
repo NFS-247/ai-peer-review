@@ -57,6 +57,28 @@ container health check (already wired in the Dockerfile).
 
 A public **HTTPS** URL is required for the OAuth callback.
 
+## Self-serve onboarding (the Connect page)
+
+`/connect` lets a signed-in user wire **their own** repo for review in one form:
+check the AI providers they want, paste each one's key, name the repo, submit.
+There is **no GitHub App to register** — provisioning runs as the signed-in user
+over the OAuth token they already have. That token's default `repo` scope is what
+covers it: creating the repo, committing the workflow (`@v3`) + `.peer-review.json`,
+and setting the Actions secrets. The selected providers drive both the secrets and
+the reviewer roster, so a repo never requires a model it has no key for.
+
+Requirements for Connect specifically:
+
+- **OAuth configured** (prod), so each user provisions as themselves. (In local
+  dev-token mode it works too, as the single dev user.)
+- **PyNaCl installed** — the container already installs it (`requirements.txt`);
+  it's what encrypts each secret with a libsodium sealed box before it's sent.
+  Without it, Connect returns a clear "install PyNaCl" error instead of provisioning.
+
+The user's only steps are the ones you want them to have: make a GitHub account,
+buy their AI keys, sign in, paste the keys. Org-owned repos and connecting a
+pre-existing repo work; creating under the user's own account is the default.
+
 ## Notes for scale
 
 - **Sessions are in-memory** → run a single instance, or use sticky sessions, or

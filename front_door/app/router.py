@@ -21,6 +21,7 @@ from typing import Callable, Optional
 
 from . import render
 from .commands import VALID_ACTIONS, command_body
+from .provision import PROVIDER_ORDER, provision
 from .sessions import SID_COOKIE, STATE_COOKIE
 from .viewmodels import (
     GLOBAL_SPEND_MARKER,
@@ -48,6 +49,7 @@ class Deps:
     now_ts: float
     sessions: object = None            # SessionStore (None -> dev/no-session mode)
     oauth: object = None               # OAuth (None/unconfigured -> dev mode)
+    provisioning_client: Callable = None  # (cookies) -> ProvisioningClient | None
 
 
 # ---- cookies ----------------------------------------------------------------
@@ -169,6 +171,12 @@ def route(method: str, path: str, *, cookies: dict, form: dict, deps: Deps,
     if method == "POST" and path == "/action":
         return _handle_action(cookies=cookies, form=form, deps=deps)
 
+    if method == "GET" and path == "/connect":
+        return _handle_connect_form(deps=deps, cookies=cookies)
+
+    if method == "POST" and path == "/connect":
+        return _handle_connect_submit(deps=deps, cookies=cookies, form=form)
+
     return Response(404, render.message_page("Not found", "No such page."))
 
 
@@ -276,6 +284,76 @@ def _handle_action(*, cookies: dict, form: dict, deps: Deps) -> Response:
 
     # Posted as the operator; the engine reacts. Back to the queue.
     return Response(303, "", headers={"Location": "/inbox"})
+
+
+# ---- connect (self-serve provisioning) --------------------------------------
+def _provisioner(deps: Deps, cookies: dict):
+    """The operator's provisioning client (their own token), or None if no
+    identity — provisioning always runs AS the signed-in user, on their repos."""
+    factory = getattr(deps, "provisioning_client", None)
+    return factory(cookies) if factory else None
+
+
+def _handle_connect_form(*, deps: Deps, cookies: dict, error: str = "") -> Response:
+    client = _provisioner(deps, cookies)
+    if client is None:
+        return Response(200, render.message_page(
+            "Connect a repo",
+            "Sign in with GitHub to connect a repository — provisioning runs as "
+            "you, on your own repos. <a href='/login'>Sign in.</a>",
+            signed_in=_signed_in(deps, cookies)))
+    return Response(200, render.connect_page(
+        login=client.login, csrf=_session_csrf(deps, cookies) or "",
+        signed_in=_signed_in(deps, cookies), error=error))
+
+
+def _handle_connect_submit(*, deps: Deps, cookies: dict, form: dict) -> Response:
+    client = _provisioner(deps, cookies)
+    if client is None:
+        return Response(401, render.message_page(
+            "Sign in required",
+            "Sign in with GitHub to connect a repository. <a href='/login'>Sign in.</a>",
+            signed_in=_signed_in(deps, cookies)))
+    if not _csrf_ok(deps, cookies, form):
+        return Response(403, render.message_page("Blocked", "Invalid CSRF token; reload and retry."))
+
+    repo = (form.get("repo") or "").strip()
+    if not repo:
+        return _handle_connect_form(deps=deps, cookies=cookies, error="Enter a repository name.")
+    private = bool(form.get("private"))
+
+    # A provider counts as selected when its checkbox is checked; a checked box
+    # with a blank key is a user error we surface rather than silently drop.
+    api_keys: dict = {}
+    missing: list = []
+    for pid in PROVIDER_ORDER:
+        if not form.get(f"provider_{pid}"):
+            continue
+        key = (form.get(f"key_{pid}") or "").strip()
+        if key:
+            api_keys[pid] = key
+        else:
+            missing.append(pid)
+    if missing:
+        return _handle_connect_form(
+            deps=deps, cookies=cookies,
+            error=f"Checked {', '.join(missing)} but pasted no key for it.")
+
+    try:
+        result = provision(client, owner=client.login, repo=repo,
+                           operator_login=client.login, api_keys=api_keys, private=private)
+    except ValueError as exc:
+        # e.g. no provider selected at all — re-show the form with the reason.
+        return _handle_connect_form(deps=deps, cookies=cookies, error=str(exc))
+    except Exception as exc:  # noqa: BLE001 - surface the failure, never 500 silently
+        return Response(502, render.message_page(
+            "Could not connect",
+            f"GitHub rejected provisioning: {type(exc).__name__}. Check your access "
+            "to the repo and try again.", signed_in=_signed_in(deps, cookies)))
+
+    return Response(200, render.connect_success(
+        login=client.login, repo=repo, panel=result.reviewers,
+        signed_in=_signed_in(deps, cookies)))
 
 
 __all__ = ["Response", "Deps", "route"]

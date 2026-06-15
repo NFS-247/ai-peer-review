@@ -1,0 +1,8 @@
+# Front Door runtime dependencies.
+#
+# The app core (board, inbox, OAuth, session store) is stdlib-only. The single
+# dependency below is needed ONLY by the self-serve Connect flow, which encrypts
+# each GitHub Actions secret with a libsodium sealed box before sending it, so
+# GitHub never receives the plaintext key. The test suite does not require it
+# (the sealed-box round-trip test skips when it's absent).
+PyNaCl>=1.5.0
