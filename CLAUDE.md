@@ -58,6 +58,53 @@ For example:
 The reviewer echoes that block verbatim onto the operator's ready-to-merge alert so
 they run it before merging. Omit the section for pure-code PRs with no manual step.
 
+**The capability test decides WHO runs a step — check it before you write the
+section.** Look at the tools and connectors actually available in your session
+(Supabase, Render, Vercel, GitHub, a shell — whatever is wired up). **If one of
+them can perform the step, it is YOURS to run, not the operator's.** That
+connector is in the session precisely so you use it; leaving it unused and
+filing the work for a non-technical operator is the failure this rule exists to
+stop. A step belongs to the operator when nothing in the session can do it —
+there is no such tool, the credential or console is somewhere you cannot reach,
+or it is an account/billing/physical action that is theirs alone — **and also
+whenever the timing rule below sends it there.**
+
+Capability decides WHO *can* run a step; timing decides WHERE it may be filed.
+Ask both, in order:
+
+1. **Can anything in this session do it?** No → `## Operator steps`.
+2. **Yes — can you finish it before the merge happens?** A prerequisite the
+   merged code depends on must be done while the PR is still OPEN. If you
+   cannot complete it before the merge, it stays under `## Operator steps` **no
+   matter who could run it** (see "Ordering is yours" below) — having the tool
+   never licenses filing a deferred prerequisite under the automated heading,
+   because that lets the code land against a migration that has not run. Steps
+   you will genuinely complete — while the PR is open, or safely after merge —
+   go under `## Automated steps (handled by this session)`, and then you run
+   them.
+
+So, concretely: a migration in a repo where you hold Supabase tools is an
+**automated** step — applied while the PR is open, then said so in the section.
+An env var in a repo where you hold the hosting connector is an **automated**
+step. The same two, in a session with no such connector, are **operator**
+steps. Never classify by the *kind* of step ("migrations are operator steps") —
+classify by what THIS session can reach, then by when you can finish it. "I
+could have run it, but filed it for the operator anyway" holds the PR and hands
+the operator work the automation was there to absorb.
+
+One case needs a human decision even though you *can* run it: a step that is
+destructive and irreversible on production data (dropping a table, deleting
+rows, rotating a live credential). Ask the operator in chat before running it.
+
+**Asking gates nothing.** An unanswered question in chat holds no PR; the merge
+will not wait for it. So the timing rule still applies to a destructive step,
+unchanged: if the merged code depends on it, it goes under `## Operator steps`
+while the decision is pending, and the gate holds the PR until it is settled.
+It becomes an automated step only once you have the answer AND have run it
+while the PR is open — recorded as done, per "Ordering is yours" below. What is
+never right is filing it under `## Operator steps` and going quiet: the ask is
+the point, not the filing.
+
 **Only steps a HUMAN must perform belong under `## Operator steps`.** That
 heading is a merge gate: the dispatcher will not auto-merge a PR whose
 description carries actionable operator steps — it holds the PR for the
